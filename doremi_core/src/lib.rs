@@ -94,14 +94,14 @@ impl Time {
 
 impl fmt::Display for Time {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:02}-{:02}-{:02}", self.hour, self.minute, self.second)
+        write!(f, "{:02}:{:02}:{:02}", self.hour, self.minute, self.second)
     }
 }
 
 impl FromStr for Time {
     type Err = ();
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut it = s.split('-').flat_map(|s| s.parse::<u8>().ok());
+        let mut it = s.split(':').flat_map(|s| s.parse::<u8>().ok());
         Ok(Time {
             hour: it.next().ok_or(())?,
             minute: it.next().ok_or(())?,
@@ -125,7 +125,7 @@ impl PartialOrd for Time {
     }
 }
 
-/// 2026-01-27 10-22-01
+/// 2026-01-27 10:22:01
 #[derive(Debug, PartialEq, Eq, Default, Clone, Copy)]
 struct DateTime {
     date: Date,
@@ -296,16 +296,16 @@ mod tests {
 
         let s = "
 id = 0
-ctime = 2026-01-27 10-22-01
-utime = 2026-01-27 10-22-01
+ctime = 2026-01-27 10:22:01
+utime = 2026-01-27 10:22:01
 tags = [tag1, tag2]
 name = note 1
 multiline
 data
 ---
 id = 1
-ctime = 2026-01-27 10-22-02
-utime = 2026-01-27 20-22-02
+ctime = 2026-01-27 10:22:02
+utime = 2026-01-27 20:22:02
 tags = [tag1, tag2]
 name = note 1
 one-line data
@@ -320,16 +320,16 @@ one-line data
     fn from_str() {
         let s = "
 id = 0
-ctime = 2026-01-27 10-22-01
-utime = 2026-01-27 10-22-01
+ctime = 2026-01-27 10:22:01
+utime = 2026-01-27 10:22:01
 tags = [tag1, tag2]
 name = note 1
 multiline
 data
 ---
 id = 1
-ctime = 2026-01-27 10-22-02
-utime = 2026-01-27 20-22-02
+ctime = 2026-01-27 10:22:02
+utime = 2026-01-27 20:22:02
 tags = [tag1, tag2]
 name = note 1
 one-line data
