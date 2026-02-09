@@ -1,5 +1,7 @@
 #![allow(unused)]
 
+pub mod sync;
+
 use date::interval::{DateInterval, MonthInterval};
 use datetime::{Date, DateTime, FromDate, interval::TimeInterval};
 use std::{
@@ -457,7 +459,9 @@ lorem ipsum something something
 
         let s = fmt_patt2(&sdt1, &sdt2);
 
-        assert_eq!(s, fs::read_to_string(flname).unwrap())
+        assert_eq!(s, fs::read_to_string(&flname).unwrap());
+
+        fs::remove_file(&flname).unwrap();
     }
 
     #[test]
@@ -484,8 +488,11 @@ lorem ipsum something something
         new(name.clone(), tags.to_vec(), data.clone(), *dt2);
 
         let s = fmt_patt2(&sdt1, &sdt2);
-        let x = fs::read_to_string(flname1).unwrap() + &fs::read_to_string(flname2).unwrap();
+        let x = fs::read_to_string(&flname1).unwrap() + &fs::read_to_string(&flname2).unwrap();
 
-        assert_eq!(s, x)
+        assert_eq!(s, x);
+
+        fs::remove_file(&flname1).unwrap();
+        fs::remove_file(&flname2).unwrap();
     }
 }
