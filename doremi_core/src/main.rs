@@ -1,4 +1,8 @@
+use doremi_core::sync;
+
 fn main() {
-    let r = doremi_core::sync::auth_user();
-    println!("r: {r:?}");
+    env_logger::init();
+
+    let creds = sync::get_google_api_creds().unwrap();
+    println!("{:?}", creds.list());
 }

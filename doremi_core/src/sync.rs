@@ -1,155 +1,123 @@
-use datetime::DateTime;
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
     io::{Read, Write},
-    net, thread,
+    net, path,
     time::{self, Duration, SystemTime},
 };
 use ureq::{
-    self, RequestBuilder,
+    self,
     typestate::{WithBody, WithoutBody},
-    unversioned::transport,
 };
 use url::Url;
 
+// TODO: some of these are provided in the client_secret or google's responses
 const URL_OAUTH_AUTH: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const IP_LOOPBACK: &str = "127.0.0.1";
 const PORT_LOOPBACK: u16 = 53682;
-const URL_OAUTH_DEVICE_CODE: &str = "https://oauth2.googleapis.com/device/code";
 const URL_OAUTH_TOKEN: &str = "https://oauth2.googleapis.com/token";
 const OAUTH_SCOPE_DRIVE_APPDATA: &str = "https://www.googleapis.com/auth/drive.appdata";
 const URL_DRIVE_FILES: &str = "https://www.googleapis.com/drive/v3/files";
 const URL_DRIVE_UPLOAD: &str = "https://www.googleapis.com/upload/drive/v3/files";
 
-#[derive(Deserialize, Debug)]
-struct ClientSecret {
-    installed: DriveApiData,
+fn secure_storage_path() -> path::PathBuf {
+    path::PathBuf::from("data")
 }
 
 #[derive(Deserialize, Debug)]
-struct DriveApiData {
+struct ApiCreds {
     #[serde(rename = "client_id")]
     id: String,
     #[serde(rename = "client_secret")]
     secret: String,
+    //auth_uri: String,
+    //token_uri: String,
+    //redirect_uris: Vec<String>,
 }
 
 #[derive(Deserialize, Debug)]
-struct DeviceCodeResp {
-    device_code: String,
-    user_code: String,
-    verification_url: String,
-    expires_in: u64,
-    interval: u64,
+struct ClientSecret {
+    installed: ApiCreds,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-pub struct TokenResp {
-    access_token: String,
-    expires_in: u64,
-    refresh_token: String,
-    refresh_token_expires_in: Option<u64>,
-    scope: String,
-    token_type: String,
-    #[serde(skip_deserializing)]
-    ctime: Option<SystemTime>,
-}
+impl ApiCreds {
+    fn path() -> path::PathBuf {
+        secure_storage_path().join("client_secret.json")
+    }
 
-fn oauth_device_code(api: &DriveApiData, scope: &str) -> DeviceCodeResp {
-    ureq::post(URL_OAUTH_DEVICE_CODE)
-        .send_form([("client_id", api.id.as_str()), ("scope", scope)])
-        .unwrap()
-        .body_mut()
-        .read_json()
-        .unwrap()
-}
+    fn read() -> anyhow::Result<ApiCreds> {
+        let mut fl = fs::File::open(Self::path())?;
+        let secret: ClientSecret = serde_json::from_reader(&mut fl)?;
 
-fn oauth_poll_token(api: &DriveApiData, device_code: &DeviceCodeResp) -> Result<TokenResp, String> {
-    let start = time::Instant::now();
-
-    loop {
-        thread::sleep(time::Duration::new(device_code.interval, 0));
-
-        let mut resp = ureq::post(URL_OAUTH_TOKEN).send_form([
-            ("client_id", api.id.as_str()),
-            ("client_secret", api.secret.as_str()),
-            ("device_code", &device_code.device_code),
-            ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-        ]);
-
-        match resp {
-            Ok(mut r) => {
-                let mut token: TokenResp = r.body_mut().read_json().unwrap();
-                token.ctime = Some(SystemTime::now());
-
-                return Ok(token);
-            }
-            // Err(ureq::Error::StatusCode(400)) => {
-            //     // authorization_pending, slow_down, etc.
-            //     let body = r.into_string().unwrap();
-            //     if body.contains("authorization_pending") {
-            //         thread::sleep(Duration::from_secs(device_code.interval));
-            //         continue;
-            //     }
-            //     return Err(body.into());
-            // }
-            Err(e) => {
-                println!("poll without success");
-                if start.elapsed().as_secs() > device_code.expires_in {
-                    return Err("Waited too long".into());
-                }
-            }
-        }
+        Ok(secret.installed)
     }
 }
 
-fn oatuh_refresh_token(api: &DriveApiData, refresh_token: &str) -> TokenResp {
-    ureq::post(URL_OAUTH_TOKEN)
-        .send_form([
-            ("client_id", api.id.as_str()),
-            ("client_secret", api.secret.as_str()),
-            ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_token),
-        ])
-        .unwrap()
-        .body_mut()
-        .read_json()
-        .unwrap()
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct RespToken {
+    access_token: String,
+    expires_in: u64,
+    scope: String,
+    token_type: String,
+    refresh_token: String,
+    refresh_token_expires_in: Option<u64>,
 }
 
-fn flname_client_secret() -> &'static str {
-    "cache/client_secret.json"
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RespRefreshToken {
+    access_token: String,
+    expires_in: u64,
+    scope: String,
+    token_type: String,
 }
 
-fn drive_api_data() -> DriveApiData {
-    let mut fl = fs::File::open(flname_client_secret()).unwrap();
-    let secret: ClientSecret = serde_json::from_reader(&mut fl).unwrap();
-
-    secret.installed
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GoogleCreds {
+    token: RespToken,
+    token_ctime: SystemTime,
 }
 
-fn flname_token() -> &'static str {
-    "cache/.token.json"
+impl GoogleCreds {
+    fn path() -> path::PathBuf {
+        secure_storage_path().join("creds.json")
+    }
+
+    fn read() -> anyhow::Result<Option<GoogleCreds>> {
+        let path = Self::path();
+        if !fs::exists(path)? {
+            return Ok(None);
+        }
+        let mut fl = fs::File::open(Self::path())?;
+        let creds: Option<GoogleCreds> = serde_json::from_reader(&mut fl)?;
+
+        Ok(creds)
+    }
+
+    fn write(&self) -> anyhow::Result<()> {
+        let mut fl = fs::File::create(Self::path())?;
+        serde_json::to_writer(&mut fl, self)?;
+
+        Ok(())
+    }
+
+    fn delete(self) -> anyhow::Result<()> {
+        fs::remove_file(Self::path())?;
+
+        Ok(())
+    }
 }
 
-fn read_token() -> Option<TokenResp> {
-    let mut fl = fs::File::open(flname_token()).ok()?;
-
-    serde_json::from_reader(&mut fl).ok()
+fn mk_loopback_url() -> String {
+    format!("http://{IP_LOOPBACK}:{PORT_LOOPBACK}")
 }
 
-fn write_token(token: &TokenResp) {
-    let mut fl = fs::File::create(flname_token()).unwrap();
-
-    serde_json::to_writer(&mut fl, &token).unwrap();
-}
-
-fn mk_auth_url(api: &DriveApiData) -> String {
+fn mk_auth_url(api: &ApiCreds) -> String {
     let mut url = Url::parse(URL_OAUTH_AUTH).unwrap();
+
     url.query_pairs_mut()
         .append_pair("client_id", api.id.as_str())
-        .append_pair("redirect_uri", &format!("http://{IP_LOOPBACK}:{PORT_LOOPBACK}"))
+        .append_pair("redirect_uri", mk_loopback_url().as_str())
         .append_pair("response_type", "code")
         .append_pair("scope", OAUTH_SCOPE_DRIVE_APPDATA);
     // TODO: state for security
@@ -157,95 +125,129 @@ fn mk_auth_url(api: &DriveApiData) -> String {
     url.to_string()
 }
 
-fn listen_for_code() -> String {
-    let listener = net::TcpListener::bind((IP_LOOPBACK, PORT_LOOPBACK)).unwrap();
-    println!("Listening on {IP_LOOPBACK}:{PORT_LOOPBACK}");
-
+fn listen_for_code() -> anyhow::Result<String> {
     // accept exactly one request
-    let (mut stream, _) = listener.accept().unwrap();
+    let listener = net::TcpListener::bind((IP_LOOPBACK, PORT_LOOPBACK))?;
+    log::debug!("Listening on {IP_LOOPBACK}:{PORT_LOOPBACK}");
 
-    let mut buffer = vec![0u8; 4096];
-    let n = stream.read(&mut buffer).unwrap();
-    buffer.truncate(n);
-    let req = String::from_utf8(buffer).unwrap();
+    let (mut stream, _) = listener.accept()?;
 
-    let code = req
+    // TODO: better
+    let mut buf = vec![0u8; 4096];
+    let read = stream.read(&mut buf)?; // no read_to_string, cause that will wait for EOF and hang indefinitely
+    assert!(read < buf.len()); // 4096 should have been more that enough
+    let resp = str::from_utf8(&buf[..read])?;
+
+    // eg: GET /?code=<code>&scope=<scope> HTTP/1.1
+    let code = resp
         .split_whitespace()
         .nth(1)
         .and_then(|path| path.split('?').nth(1))
-        .and_then(|qs| form_urlencoded::parse(qs.as_bytes()).find(|(k, _)| k == "code").map(|(_, v)| v))
-        .unwrap();
+        .and_then(|qs| {
+            form_urlencoded::parse(qs.as_bytes())
+                .find(|(k, _)| k == "code")
+                .map(|(_, v)| v)
+        })
+        .context("parse device code")?;
 
     let response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nYou can close this window.";
-    stream.write_all(response.as_bytes()).unwrap();
+    stream.write_all(response.as_bytes())?;
 
-    code.to_string()
-    // parse GET /?code=XYZ
-    // let mut url = Url::parse(IP_LOOPBACK).unwrap();
-    // url.set_query(req.split_whitespace().nth(1));
-    // let code = url
-    //     .query_pairs()
-    //     .find(|(k, _)| k == "code")
-    //     .map(|(_, v)| v)
-    //     .unwrap();
-    //-----------
-    // let code = req
-    //     .split_whitespace()
-    //     .nth(1)
-    //     .and_then(|path| path.split('?').nth(1))
-    //     .and_then(|qs| qs.split('&').find(|kv| kv.starts_with("code=")))
-    //     .and_then(|kv| kv.strip_prefix("code="))
-    //     .unwrap();
+    Ok(code.to_string())
 }
 
-pub fn auth_user() -> Result<TokenResp, String> {
-    let api = drive_api_data();
+fn exchange_code_for_token(api: &ApiCreds, code: String) -> anyhow::Result<RespToken> {
+    let token: RespToken = ureq::post(URL_OAUTH_TOKEN)
+        .send_form([
+            ("code", code.as_str()),
+            ("client_id", api.id.as_str()),
+            ("client_secret", api.secret.as_str()),
+            ("redirect_uri", mk_loopback_url().as_str()),
+            ("grant_type", "authorization_code"),
+        ])?
+        .body_mut()
+        .read_json()?;
 
-    if let Some(token) = read_token() {
-        let now = time::SystemTime::now();
+    Ok(token)
+}
 
-        if now
-            .duration_since(token.ctime.unwrap())
-            .unwrap_or(Duration::ZERO)
-            .as_secs()
-            >= token.expires_in
-        {
-            if let Some(expires_in) = token.refresh_token_expires_in {
-                fs::remove_file(flname_token()).unwrap();
+fn refresh_token(google: &mut GoogleCreds, api: &ApiCreds) -> anyhow::Result<()> {
+    let refresh_token: RespRefreshToken = ureq::post(URL_OAUTH_TOKEN)
+        .send_form([
+            ("client_id", api.id.as_str()),
+            ("client_secret", api.secret.as_str()),
+            ("grant_type", "authorization_code"),
+            ("refresh_token", google.token.refresh_token.as_str()),
+        ])?
+        .body_mut()
+        .read_json()?;
 
-                auth_user()
-            } else {
-                let new_token = oatuh_refresh_token(&api, &token.refresh_token);
-                write_token(&new_token);
+    let RespRefreshToken {
+        access_token,
+        expires_in,
+        scope,
+        token_type,
+    } = refresh_token;
 
-                Ok(new_token)
+    google.token = RespToken {
+        access_token,
+        expires_in,
+        scope,
+        token_type,
+        ..google.token.clone()
+    };
+
+    Ok(())
+}
+
+pub fn get_google_api_creds() -> anyhow::Result<GoogleCreds> {
+    let api = ApiCreds::read()?;
+
+    let google = match GoogleCreds::read()? {
+        Some(mut google) => {
+            let now = time::SystemTime::now();
+
+            if now
+                .duration_since(google.token_ctime)
+                .unwrap_or(Duration::ZERO)
+                .as_secs()
+                >= google.token.expires_in
+            {
+                log::debug!("Token expired: {google:?}");
+
+                let res = refresh_token(&mut google, &api);
+                if res.is_err() {
+                    log::debug!("Couldn't refresh token: {res:?}");
+                    // starting over
+                    google.delete()?;
+
+                    return get_google_api_creds();
+                }
             }
-        } else {
-            Ok(token)
+
+            google
         }
-    } else {
-        let url = mk_auth_url(&api);
-        println!("{url}");
-        if webbrowser::open(&url).is_err() {
-            println!("Open this url in your browser: {url}");
+        _ => {
+            let url = mk_auth_url(&api);
+            if webbrowser::open(&url).is_err() {
+                println!("Open this url in your browser: {url}");
+            }
+            let code = listen_for_code()?;
+            log::debug!("code: {code}");
+
+            let token = exchange_code_for_token(&api, code)?;
+
+            let google = GoogleCreds {
+                token,
+                token_ctime: time::SystemTime::now(),
+            };
+            google.write()?;
+
+            google
         }
+    };
 
-        let code = listen_for_code();
-
-        Err(code)
-
-        // let device_code = oauth_device_code(&api, OAUTH_SCOPE_DRIVE_APPDATA);
-
-        // println!("{device_code:?}");
-
-        // println!("Browse to {}", device_code.verification_url);
-        // println!("Enter code '{}'", device_code.user_code);
-
-        // let token = oauth_poll_token(&api, &device_code)?;
-        // write_token(&token);
-
-        // Ok(token)
-    }
+    Ok(google)
 }
 
 #[derive(Debug, Deserialize)]
@@ -262,26 +264,16 @@ struct ListFilesResp {
     files: Vec<DriveFile>,
 }
 
-pub struct DriveClient {
-    token: String,
-}
-
-impl DriveClient {
-    pub fn new(token: impl Into<String>) -> Self {
-        Self {
-            token: token.into(),
-        }
-    }
-
+impl GoogleCreds {
     fn req_get(&self, url: &str) -> ureq::RequestBuilder<WithoutBody> {
-        ureq::get(url).header("Authorization", &format!("Bearer {}", self.token))
+        ureq::get(url).header("Authorization", &format!("Bearer {}", self.token.access_token))
     }
 
     fn req_post(&self, url: &str) -> ureq::RequestBuilder<WithBody> {
-        ureq::post(url).header("Authorization", &format!("Bearer {}", self.token))
+        ureq::post(url).header("Authorization", &format!("Bearer {}", self.token.access_token))
     }
 
-    pub fn req_multipart(
+    fn req_multipart(
         &self,
         url: &str,
         metadata: serde_json::Value,
@@ -304,7 +296,7 @@ impl DriveClient {
         let boundary = "BOUNDARY1234567890";
         let mut body = Vec::new();
 
-        let mut req = self
+        let req = self
             .req_post(url)
             .query("uploadType", "multipart")
             .content_type(format!("multipart/related; boundary={boundary}"));
@@ -321,7 +313,7 @@ impl DriveClient {
         (req, body)
     }
 
-    pub fn list(&self) -> Result<Vec<DriveFile>, anyhow::Error> {
+    pub fn list(&self) -> anyhow::Result<Vec<DriveFile>> {
         let resp: ListFilesResp = self
             .req_get(URL_DRIVE_FILES)
             .query("spaces", "appDataFolder")
@@ -333,7 +325,7 @@ impl DriveClient {
         Ok(resp.files)
     }
 
-    pub fn download(&self, file_id: &str) -> Result<Vec<u8>, ureq::Error> {
+    pub fn download(&self, file_id: &str) -> anyhow::Result<Vec<u8>> {
         let resp = self
             .req_get(&format!("{URL_DRIVE_FILES}/{file_id}"))
             .query("alt", "media")
@@ -344,7 +336,7 @@ impl DriveClient {
         Ok(resp)
     }
 
-    pub fn upload(&self, name: &str, payload: &[u8]) -> Result<String, ureq::Error> {
+    pub fn upload(&self, name: &str, payload: &[u8]) -> anyhow::Result<String> {
         let metadata = serde_json::json!({
             "name": name,
             "parents": ["appDataFolder"]
@@ -355,29 +347,11 @@ impl DriveClient {
         Ok(resp["id"].as_str().unwrap().to_string())
     }
 
-    pub fn update(&self, file_id: &str, payload: &[u8]) -> Result<(), ureq::Error> {
+    pub fn update(&self, _file_id: &str, payload: &[u8]) -> anyhow::Result<()> {
         let metadata = serde_json::json!({});
         let (req, body) = self.req_multipart(URL_DRIVE_UPLOAD, metadata, payload);
         let _: serde_json::Value = req.send(&body)?.body_mut().read_json()?;
 
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_url() {
-        let api = drive_api_data();
-        let url = mk_auth_url(&api);
-        println!("\n{url}");
-        // env_logger::init();
-        // println!();
-
-        // let api = drive_api_data();
-        // let drive = oauth_device_code(&api, OAUTH_SCOPE_DRIVE_APPDATA);
-        // println!("{drive:?}");
     }
 }
