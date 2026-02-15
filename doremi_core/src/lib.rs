@@ -1,5 +1,3 @@
-#![allow(unused)]
-
 pub mod sync;
 
 use date::interval::{DateInterval, MonthInterval};
@@ -8,8 +6,7 @@ use std::{
     fmt::{self, Debug, Write},
     fs,
     io::{self, Seek, SeekFrom},
-    iter,
-    ops::{self, Add},
+    iter, ops, path,
     str::FromStr,
 };
 
@@ -45,52 +42,16 @@ impl<T: FromStr> FromStr for RVec<T> {
     }
 }
 
-//macro_rules! newtype {
-//    ($new:ident, $old:ident) => {
-//        struct $new(pub $old);
-//
-//        impl std::ops::Deref for $new {
-//            type Target = $old;
-//            fn deref(&self) -> &Self::Target {
-//                &self.0
-//            }
-//        }
-//
-//        impl From<$old> for $new {
-//            fn from(value: DateTime) -> Self {
-//                $new(value)
-//            }
-//        }
-//
-//        impl std::fmt::Debug  for $new {
-//            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-//                std::fmt::Debug::fmt(&self.0, f)
-//            }
-//        }
-//    };
-//}
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct RDateTime(DateTime);
 
-trait DateTimeUtil {
-    // fn from_date_and_hms(date: Date, hour: u8, minute: u8, second: u8) -> Self;
-    fn with_date(self, date: Date) -> Self;
-}
+impl RDateTime {
+    const FMT: &str = "%Y-%m-%d %H:%M:%S";
 
-impl DateTimeUtil for DateTime {
-    // fn from_date_and_hms(date: Date, hour: u8, minute: u8, second: u8) -> Self {
-    //     let secs = date.timestamp() + hour as i64 * 3600 + minute as i64 * 60 + second as i64;
-
-    //     DateTime::from_timestamp(secs, 0)
-    // }
-
-    fn with_date(self, date: Date) -> Self {
-        // let ts_hms = self.as_seconds() - self.date().timestamp();
-        // DateTime::from_timestamp(date.timestamp() + ts_hms, 0)
-        date.hms(self.hour(), self.minute(), self.second()).build()
+    fn with_date_and_time(date: Date, time: DateTime) -> RDateTime {
+        RDateTime(date.hms(time.hour(), time.minute(), time.second()).build())
     }
 }
-
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-struct RDateTime(DateTime);
 
 impl ops::Deref for RDateTime {
     type Target = DateTime;
@@ -101,8 +62,7 @@ impl ops::Deref for RDateTime {
 
 impl From<DateTime> for RDateTime {
     fn from(value: DateTime) -> Self {
-        let dt_nomillis = DateTime::from_timestamp_millis(value.as_seconds() * 1000);
-        RDateTime(dt_nomillis)
+        RDateTime(DateTime::from_timestamp(value.as_seconds(), 0))
     }
 }
 
@@ -113,26 +73,11 @@ impl ops::Add<TimeInterval> for RDateTime {
     }
 }
 
-impl ops::Sub<TimeInterval> for RDateTime {
-    type Output = Self;
-    fn sub(self, rhs: TimeInterval) -> Self::Output {
-        RDateTime(self.0 - rhs)
-    }
-}
-
 impl ops::Add<DateInterval> for RDateTime {
     type Output = Self;
     fn add(self, rhs: DateInterval) -> Self::Output {
         let date = self.0.date() + rhs;
-        RDateTime(self.with_date(date))
-    }
-}
-
-impl ops::Sub<DateInterval> for RDateTime {
-    type Output = Self;
-    fn sub(self, rhs: DateInterval) -> Self::Output {
-        let date = self.0.date() - rhs;
-        RDateTime(self.with_date(date))
+        Self::with_date_and_time(date, self.0)
     }
 }
 
@@ -140,23 +85,7 @@ impl ops::Add<MonthInterval> for RDateTime {
     type Output = Self;
     fn add(self, rhs: MonthInterval) -> Self::Output {
         let date = self.0.date() + rhs;
-        RDateTime(self.with_date(date))
-    }
-}
-
-impl ops::Sub<MonthInterval> for RDateTime {
-    type Output = Self;
-    fn sub(self, rhs: MonthInterval) -> Self::Output {
-        let date = self.0.date() - rhs;
-        RDateTime(self.with_date(date))
-    }
-}
-
-impl RDateTime {
-    const FMT: &str = "%Y-%m-%d %H:%M:%S";
-
-    fn inner(self) -> DateTime {
-        self.0
+        Self::with_date_and_time(date, self.0)
     }
 }
 
@@ -169,22 +98,21 @@ impl FromStr for RDateTime {
 
 impl fmt::Display for RDateTime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.0.format(Self::FMT), f)
+        write!(f, "{}", &self.0.format(Self::FMT))
     }
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct Record {
+pub struct Record {
     id: u32,
     ctime: RDateTime,
     utime: RDateTime,
     tags: RVec<String>,
     name: String,
-    data: String,
+    contents: String,
 }
 
 impl Record {
-    const MAX_DISK_SIZE: usize = 4096;
     const SEP: &str = "\n---\n";
 
     const K_ID: &str = "id";
@@ -202,8 +130,7 @@ impl fmt::Display for Record {
         writeln!(&mut s, "{} = {}", Self::K_UTIME, self.utime)?;
         writeln!(&mut s, "{} = {}", Self::K_TAGS, self.tags)?;
         writeln!(&mut s, "{} = {}", Self::K_NAME, self.name)?;
-        s.write_str(&self.data)?;
-        assert!(s.len() + Self::SEP.len() <= Self::MAX_DISK_SIZE);
+        s.write_str(&self.contents)?;
 
         f.write_str(&s)
     }
@@ -226,7 +153,7 @@ impl FromStr for Record {
         let utime = parse_kv(it.next().ok_or(())?, Self::K_UTIME).unwrap_or(ctime);
         let tags = parse_kv(it.next().ok_or(())?, Self::K_TAGS)?;
         let name = parse_kv(it.next().ok_or(())?, Self::K_NAME)?;
-        let data = it.map(str::trim).collect::<Vec<_>>().join("\n"); // ignore only trailing endl
+        let contents = it.map(str::trim).collect::<Vec<_>>().join("\n"); // ignore only trailing endl
 
         Ok(Record {
             id,
@@ -234,13 +161,17 @@ impl FromStr for Record {
             utime,
             tags,
             name,
-            data,
+            contents,
         })
     }
 }
 
-fn mk_flname(date: Date) -> String {
-    format!("./{}_{}.md", date.year(), date.month())
+fn storage_path() -> path::PathBuf {
+    path::PathBuf::from("data")
+}
+
+fn mk_record_path(date: Date) -> path::PathBuf {
+    storage_path().join(&format!("{}_{}.md", date.year(), date.month()))
 }
 
 fn select<R: io::Read>(mut r: R) -> impl Iterator<Item = Record> {
@@ -266,58 +197,89 @@ fn insert<W: io::Write>(w: &mut W, records: &[Record]) -> io::Result<()> {
     Ok(())
 }
 
-fn next_id() -> u32 {
+fn next_id() -> anyhow::Result<u32> {
     let mut date = DateTime::now().date();
 
     loop {
-        let flname = mk_flname(date);
-        if !fs::exists(&flname).unwrap() {
-            break 0;
+        let flname = mk_record_path(date);
+        if !fs::exists(&flname)? {
+            return Ok(0);
         }
         let mut fl = fs::OpenOptions::new()
             .read(true)
             .truncate(false)
-            .open(&flname)
-            .unwrap();
-        let size = fl.metadata().unwrap().len();
-        let pos = fl
-            .seek(io::SeekFrom::Start(
-                size.saturating_sub(Record::MAX_DISK_SIZE as u64),
-            ))
-            .unwrap();
+            .open(&flname)?;
         match select(&mut fl).last().map(|r| r.id) {
-            Some(id) => break id + 1,
+            Some(id) => return Ok(id + 1),
             _ => date = date - MonthInterval::new(1),
         }
     }
 }
 
-fn new(name: String, tags: Vec<String>, data: String, ctime: DateTime) {
-    let id = next_id();
+pub fn new_record(
+    name: String,
+    tags: Vec<String>,
+    contents: String,
+    ctime: DateTime,
+) -> anyhow::Result<u32> {
+    let id = next_id()?;
     let r = Record {
         id,
-        ctime: RDateTime(ctime),
-        utime: RDateTime(ctime),
+        ctime: ctime.into(),
+        utime: ctime.into(),
         name,
         tags: RVec(tags),
-        data,
+        contents,
     };
-    let flname = mk_flname(ctime.date());
+    let flname = mk_record_path(ctime.date());
     let mut fl = fs::OpenOptions::new()
         .write(true)
         .truncate(false)
         .create(true)
-        .open(flname)
-        .unwrap();
-    fl.seek(SeekFrom::End(0)).unwrap();
+        .open(flname)?;
+    fl.seek(SeekFrom::End(0))?;
     insert(&mut fl, &[r]).unwrap();
+
+    Ok(id)
+}
+
+pub fn list_records(
+    tags: Option<Vec<String>>,
+    beg_dt: DateTime,
+    end_dt: Option<DateTime>,
+) -> anyhow::Result<Vec<Record>> {
+    let mut v = Vec::new();
+    let mut record_date = beg_dt.date();
+
+    loop {
+        let flname = mk_record_path(record_date);
+        if !fs::exists(&flname)? {
+            break;
+        }
+        let mut fl = fs::OpenOptions::new()
+            .read(true)
+            .truncate(false)
+            .open(&flname)?;
+
+        v.extend(select(&mut fl).filter(|r| {
+            r.ctime.0 >= beg_dt
+                && end_dt.map(|dt| r.ctime.0 <= dt).unwrap_or(true)
+                && tags
+                    .as_ref()
+                    .map(|tags| tags.iter().all(|t| r.tags.0.contains(t)))
+                    .unwrap_or(true)
+        }));
+
+        record_date = record_date + MonthInterval::new(1);
+    }
+
+    Ok(v)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use date::interval::DateInterval;
-    use datetime::datetime;
 
     fn fmt_patt1(sdt1: &str, sdt2: &str, sdt3: &str) -> String {
         format!(
@@ -377,7 +339,7 @@ lorem ipsum something something
             utime: dt1,
             tags: RVec(vec!["tag1".to_string(), "tag2".to_string()]),
             name: "note 1".to_string(),
-            data: "multiline\ndata".to_string(),
+            contents: "multiline\ndata".to_string(),
         };
         insert(&mut buf, &[r]).unwrap();
 
@@ -387,7 +349,7 @@ lorem ipsum something something
             utime: dt3,
             tags: RVec(vec!["tag1".to_string(), "tag2".to_string()]),
             name: "note 1".to_string(),
-            data: "one-line data".to_string(),
+            contents: "one-line data".to_string(),
         };
         insert(&mut buf, &[r]).unwrap();
 
@@ -416,7 +378,7 @@ lorem ipsum something something
                 utime: dt1,
                 tags: RVec(vec!["tag1".to_string(), "tag2".to_string()]),
                 name: "note 1".to_string(),
-                data: "multiline\ndata".to_string(),
+                contents: "multiline\ndata".to_string(),
             }),
             it.next()
         );
@@ -428,7 +390,7 @@ lorem ipsum something something
                 utime: dt3,
                 tags: RVec(vec!["tag1".to_string(), "tag2".to_string()]),
                 name: "note 1".to_string(),
-                data: "one-line data".to_string(),
+                contents: "one-line data".to_string(),
             }),
             it.next()
         );
@@ -448,14 +410,14 @@ lorem ipsum something something
         let tags = ["test".to_owned()].to_owned();
         let data = "lorem ipsum something something".to_owned();
 
-        let flname = mk_flname(date);
+        let flname = mk_record_path(date);
 
         if fs::exists(&flname).unwrap() {
             fs::remove_file(&flname).unwrap();
         }
 
-        new(name.clone(), tags.to_vec(), data.clone(), *dt1);
-        new(name.clone(), tags.to_vec(), data.clone(), *dt2);
+        new_record(name.clone(), tags.to_vec(), data.clone(), *dt1).unwrap();
+        new_record(name.clone(), tags.to_vec(), data.clone(), *dt2).unwrap();
 
         let s = fmt_patt2(&sdt1, &sdt2);
 
@@ -475,17 +437,17 @@ lorem ipsum something something
         let tags = ["test".to_owned()].to_owned();
         let data = "lorem ipsum something something".to_owned();
 
-        let flname1 = mk_flname(dt1.date());
+        let flname1 = mk_record_path(dt1.date());
         if fs::exists(&flname1).unwrap() {
             fs::remove_file(&flname1).unwrap();
         }
-        let flname2 = mk_flname(dt2.date());
+        let flname2 = mk_record_path(dt2.date());
         if fs::exists(&flname2).unwrap() {
             fs::remove_file(&flname2).unwrap();
         }
 
-        new(name.clone(), tags.to_vec(), data.clone(), *dt1);
-        new(name.clone(), tags.to_vec(), data.clone(), *dt2);
+        new_record(name.clone(), tags.to_vec(), data.clone(), *dt1).unwrap();
+        new_record(name.clone(), tags.to_vec(), data.clone(), *dt2).unwrap();
 
         let s = fmt_patt2(&sdt1, &sdt2);
         let x = fs::read_to_string(&flname1).unwrap() + &fs::read_to_string(&flname2).unwrap();
