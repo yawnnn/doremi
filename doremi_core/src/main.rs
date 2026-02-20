@@ -86,7 +86,7 @@ fn main() -> anyhow::Result<()> {
         Command::New(args) => {
             let contents = contents_or_stdin(args.contents)?;
             let tags = parse_tags(args.tags.as_deref()).unwrap_or_default();
-            let id = new_record(args.name, tags, contents, DateTime::now());
+            let id = new_record(&args.name, tags.as_slice(), &contents);
             println!("new: {id:?}");
         }
         Command::List(args) => {

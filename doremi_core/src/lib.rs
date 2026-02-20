@@ -2,46 +2,44 @@ pub mod sync;
 
 use date::interval::{DateInterval, MonthInterval};
 use datetime::{Date, DateTime, FromDate, interval::TimeInterval};
+use rand::{self, Rng};
 use std::{
-    fmt::{self, Debug, Write},
+    fmt::{self, Debug},
     fs,
     io::{self, Seek, SeekFrom},
     iter, ops, path,
     str::FromStr,
 };
 
+/// Record's Vec
 /// [x, y, z]
 #[derive(Debug, PartialEq, Eq)]
 struct RVec<T>(Vec<T>);
 
 impl<T: fmt::Display> fmt::Display for RVec<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_char('[')?;
         for (i, elmt) in self.0.iter().enumerate() {
             if i > 0 {
                 f.write_str(", ")?;
             }
-            write!(f, "{}", elmt)?
+            f.write_str(&elmt.to_string())?;
         }
-        f.write_char(']')
+        Ok(())
     }
 }
 
 impl<T: FromStr> FromStr for RVec<T> {
     type Err = ();
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        s.strip_prefix('[')
-            .and_then(|s| s.strip_suffix(']'))
-            .and_then(|s| {
-                s.split(',')
-                    .map(|s| s.trim().parse().ok())
-                    .collect::<Option<Vec<_>>>()
-            })
+        s.split(',')
+            .map(|s| s.trim().parse().ok())
+            .collect::<Option<Vec<_>>>()
             .map(|v| RVec(v))
             .ok_or(())
     }
 }
 
+/// Record's DateTime
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct RDateTime(DateTime);
 
@@ -104,7 +102,7 @@ impl fmt::Display for RDateTime {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Record {
-    id: u32,
+    id: u64,
     ctime: RDateTime,
     utime: RDateTime,
     tags: RVec<String>,
@@ -124,15 +122,12 @@ impl Record {
 
 impl fmt::Display for Record {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut s = String::new();
-        writeln!(&mut s, "{} = {}", Self::K_ID, self.id)?;
-        writeln!(&mut s, "{} = {}", Self::K_CTIME, self.ctime)?;
-        writeln!(&mut s, "{} = {}", Self::K_UTIME, self.utime)?;
-        writeln!(&mut s, "{} = {}", Self::K_TAGS, self.tags)?;
-        writeln!(&mut s, "{} = {}", Self::K_NAME, self.name)?;
-        s.write_str(&self.contents)?;
-
-        f.write_str(&s)
+        writeln!(f, "{} = {}", Self::K_ID, self.id)?;
+        writeln!(f, "{} = {}", Self::K_CTIME, self.ctime)?;
+        writeln!(f, "{} = {}", Self::K_UTIME, self.utime)?;
+        writeln!(f, "{} = {}", Self::K_TAGS, self.tags)?;
+        writeln!(f, "{} = {}", Self::K_NAME, self.name)?;
+        f.write_str(&self.contents)
     }
 }
 
@@ -197,39 +192,21 @@ fn insert<W: io::Write>(w: &mut W, records: &[Record]) -> io::Result<()> {
     Ok(())
 }
 
-fn next_id() -> anyhow::Result<u32> {
-    let mut date = DateTime::now().date();
-
-    loop {
-        let flname = mk_record_path(date);
-        if !fs::exists(&flname)? {
-            return Ok(0);
-        }
-        let mut fl = fs::OpenOptions::new()
-            .read(true)
-            .truncate(false)
-            .open(&flname)?;
-        match select(&mut fl).last().map(|r| r.id) {
-            Some(id) => return Ok(id + 1),
-            _ => date = date - MonthInterval::new(1),
-        }
-    }
-}
-
-pub fn new_record(
-    name: String,
-    tags: Vec<String>,
-    contents: String,
+fn new_record_inner<R: Rng, S: AsRef<str>>(
+    name: &str,
+    tags: &[S],
+    contents: &str,
+    rng: &mut R,
     ctime: DateTime,
-) -> anyhow::Result<u32> {
-    let id = next_id()?;
+) -> anyhow::Result<u64> {
+    let id = rng.next_u64();
     let r = Record {
         id,
         ctime: ctime.into(),
         utime: ctime.into(),
-        name,
-        tags: RVec(tags),
-        contents,
+        name: name.into(),
+        tags: RVec(tags.iter().map(|t| t.as_ref().into()).collect()),
+        contents: contents.into(),
     };
     let flname = mk_record_path(ctime.date());
     let mut fl = fs::OpenOptions::new()
@@ -238,9 +215,15 @@ pub fn new_record(
         .create(true)
         .open(flname)?;
     fl.seek(SeekFrom::End(0))?;
-    insert(&mut fl, &[r]).unwrap();
+    insert(&mut fl, &[r])?;
 
     Ok(id)
+}
+
+pub fn new_record<S: AsRef<str>>(name: &str, tags: &[S], contents: &str) -> anyhow::Result<u64> {
+    let mut rng = rand::rng();
+    let now = DateTime::now();
+    new_record_inner(name, tags, contents, &mut rng, now)
 }
 
 pub fn list_records(
@@ -278,23 +261,43 @@ pub fn list_records(
 
 #[cfg(test)]
 mod tests {
+    use std::convert::Infallible;
+
     use super::*;
     use date::interval::DateInterval;
 
+    struct TestRng(u64);
+
+    impl rand::TryRng for TestRng {
+        type Error = Infallible;
+        fn try_fill_bytes(&mut self, _dst: &mut [u8]) -> Result<(), Self::Error> {
+            Ok(()) // unused
+        }
+
+        fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+            Ok(0) // unused
+        }
+
+        fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+            self.0 += 1;
+            Ok(self.0)
+        }
+    }
+
     fn fmt_patt1(sdt1: &str, sdt2: &str, sdt3: &str) -> String {
         format!(
-            "id = 0
+            "id = 1
 ctime = {sdt1}
 utime = {sdt1}
-tags = [tag1, tag2]
+tags = tag1, tag2
 name = note 1
 multiline
 data
 ---
-id = 1
+id = 2
 ctime = {sdt2}
 utime = {sdt3}
-tags = [tag1, tag2]
+tags = tag1, tag2
 name = note 1
 one-line data
 ---
@@ -304,17 +307,17 @@ one-line data
 
     fn fmt_patt2(sdt1: &str, sdt2: &str) -> String {
         format!(
-            "id = 0
+            "id = 1
 ctime = {sdt1}
 utime = {sdt1}
-tags = [test]
+tags = tag3, tag4
 name = test_new
 lorem ipsum something something
 ---
-id = 1
+id = 2
 ctime = {sdt2}
 utime = {sdt2}
-tags = [test]
+tags = test
 name = test_new
 lorem ipsum something something
 ---
@@ -334,7 +337,7 @@ lorem ipsum something something
         let mut buf = Vec::new();
 
         let r = Record {
-            id: 0,
+            id: 1,
             ctime: dt1,
             utime: dt1,
             tags: RVec(vec!["tag1".to_string(), "tag2".to_string()]),
@@ -344,7 +347,7 @@ lorem ipsum something something
         insert(&mut buf, &[r]).unwrap();
 
         let r = Record {
-            id: 1,
+            id: 2,
             ctime: dt2,
             utime: dt3,
             tags: RVec(vec!["tag1".to_string(), "tag2".to_string()]),
@@ -373,7 +376,7 @@ lorem ipsum something something
 
         assert_eq!(
             Some(Record {
-                id: 0,
+                id: 1,
                 ctime: dt1,
                 utime: dt1,
                 tags: RVec(vec!["tag1".to_string(), "tag2".to_string()]),
@@ -385,7 +388,7 @@ lorem ipsum something something
 
         assert_eq!(
             Some(Record {
-                id: 1,
+                id: 2,
                 ctime: dt2,
                 utime: dt3,
                 tags: RVec(vec!["tag1".to_string(), "tag2".to_string()]),
@@ -402,12 +405,15 @@ lorem ipsum something something
         let dt2: RDateTime = dt1 + TimeInterval::new(61, 0);
         let sdt1 = dt1.to_string();
         let sdt2 = dt2.to_string();
+        //let mut rng = rand::rngs::Xoshiro256PlusPlus::seed_from_u64(0);
+        let mut rng = TestRng(0);
 
         assert_eq!(dt1.date(), dt2.date());
         let date = dt1.date();
 
         let name = "test_new".to_owned();
-        let tags = ["test".to_owned()].to_owned();
+        let tags1 = ["tag3".to_owned(), "tag4".to_owned()].to_owned();
+        let tags2 = ["test".to_owned()].to_owned();
         let data = "lorem ipsum something something".to_owned();
 
         let flname = mk_record_path(date);
@@ -416,8 +422,8 @@ lorem ipsum something something
             fs::remove_file(&flname).unwrap();
         }
 
-        new_record(name.clone(), tags.to_vec(), data.clone(), *dt1).unwrap();
-        new_record(name.clone(), tags.to_vec(), data.clone(), *dt2).unwrap();
+        new_record_inner(&name, tags1.as_slice(), &data, &mut rng, *dt1).unwrap();
+        new_record_inner(&name, tags2.as_slice(), &data, &mut rng, *dt2).unwrap();
 
         let s = fmt_patt2(&sdt1, &sdt2);
 
@@ -432,9 +438,11 @@ lorem ipsum something something
         let dt2: RDateTime = dt1 + MonthInterval::new(1);
         let sdt1 = dt1.to_string();
         let sdt2 = dt2.to_string();
+        let mut rng = TestRng(0);
 
         let name = "test_new".to_owned();
-        let tags = ["test".to_owned()].to_owned();
+        let tags1 = ["tag3".to_owned(), "tag4".to_owned()].to_owned();
+        let tags2 = ["test".to_owned()].to_owned();
         let data = "lorem ipsum something something".to_owned();
 
         let flname1 = mk_record_path(dt1.date());
@@ -446,8 +454,8 @@ lorem ipsum something something
             fs::remove_file(&flname2).unwrap();
         }
 
-        new_record(name.clone(), tags.to_vec(), data.clone(), *dt1).unwrap();
-        new_record(name.clone(), tags.to_vec(), data.clone(), *dt2).unwrap();
+        new_record_inner(&name, tags1.as_slice(), &data, &mut rng, *dt1).unwrap();
+        new_record_inner(&name, tags2.as_slice(), &data, &mut rng, *dt2).unwrap();
 
         let s = fmt_patt2(&sdt1, &sdt2);
         let x = fs::read_to_string(&flname1).unwrap() + &fs::read_to_string(&flname2).unwrap();
