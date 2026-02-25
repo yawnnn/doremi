@@ -1,4 +1,4 @@
-pub mod sync;
+pub mod google;
 
 use date::interval::{DateInterval, MonthInterval};
 use datetime::{Date, DateTime, FromDate, interval::TimeInterval};
@@ -11,7 +11,7 @@ use std::{
     str::FromStr,
 };
 
-use crate::sync::*;
+use crate::google::*;
 
 /// Record's Vec
 /// x, y, z
