@@ -1,9 +1,10 @@
 use anyhow::Context;
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
     io::{Read, Write},
-    net, path,
+    iter, net, path,
     time::{self, Duration, SystemTime},
 };
 use ureq::{
@@ -299,21 +300,21 @@ impl DriveApi {
         metadata: serde_json::Value,
         payload: &[u8],
     ) -> (ureq::RequestBuilder<WithBody>, Vec<u8>) {
-        fn part_init(body: &mut Vec<u8>, boundary: &str) {
+        fn add_part(body: &mut Vec<u8>, boundary: &str, headers: &[(&str, &str)], payload: &[u8]) {
             body.extend(format!("--{boundary}\r\n").as_bytes());
-        }
-
-        fn part_header(body: &mut Vec<u8>, name: &str, value: &str) {
-            body.extend(format!("{name}: {value}\r\n").as_bytes());
-        }
-
-        fn part_body(body: &mut Vec<u8>, payload: &[u8]) {
+            for (name, val) in headers {
+                body.extend(format!("{name}: {val}\r\n").as_bytes());
+            }
             body.extend(b"\r\n");
             body.extend(payload);
             body.extend(b"\r\n");
         }
 
-        let boundary = "BOUNDARY1234567890";
+        let mut rng = rand::rng();
+        let boundary: String = iter::repeat_with(|| rng.sample(rand::distr::Alphanumeric))
+            .take(48)
+            .map(char::from)
+            .collect();
         let mut body = Vec::new();
 
         let req = self
@@ -321,12 +322,18 @@ impl DriveApi {
             .query("uploadType", "multipart")
             .content_type(format!("multipart/related; boundary={boundary}"));
 
-        part_init(&mut body, boundary);
-        part_header(&mut body, "Content-Type", "application/json; charset=UTF-8");
-        part_body(&mut body, serde_json::to_vec(&metadata).unwrap().as_slice());
-        part_init(&mut body, boundary);
-        part_header(&mut body, "Content-Type", "application/octet-stream");
-        part_body(&mut body, payload);
+        add_part(
+            &mut body,
+            &boundary,
+            &[("Content-Type", "application/json; charset=UTF-8")],
+            serde_json::to_vec(&metadata).unwrap().as_slice(),
+        );
+        add_part(
+            &mut body,
+            &boundary,
+            &[("Content-Type", "application/octet-stream")],
+            payload,
+        );
 
         body.extend(format!("--{boundary}--\r\n").as_bytes());
 
