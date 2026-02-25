@@ -21,12 +21,8 @@ const OAUTH_SCOPE_DRIVE_APPDATA: &str = "https://www.googleapis.com/auth/drive.a
 const URL_DRIVE_FILES: &str = "https://www.googleapis.com/drive/v3/files";
 const URL_DRIVE_UPLOAD: &str = "https://www.googleapis.com/upload/drive/v3/files";
 
-fn secure_storage_path() -> path::PathBuf {
-    path::PathBuf::from("data")
-}
-
 #[derive(Deserialize, Debug)]
-struct ApiCreds {
+struct ApiKeys {
     #[serde(rename = "client_id")]
     id: String,
     #[serde(rename = "client_secret")]
@@ -36,18 +32,14 @@ struct ApiCreds {
     //redirect_uris: Vec<String>,
 }
 
-#[derive(Deserialize, Debug)]
-struct ClientSecret {
-    installed: ApiCreds,
-}
+impl ApiKeys {
+    fn new<P: AsRef<path::Path>>(api_data_dir: &P) -> anyhow::Result<ApiKeys> {
+        #[derive(Deserialize, Debug)]
+        struct ClientSecret {
+            installed: ApiKeys,
+        }
 
-impl ApiCreds {
-    fn path() -> path::PathBuf {
-        secure_storage_path().join("client_secret.json")
-    }
-
-    fn read() -> anyhow::Result<ApiCreds> {
-        let mut fl = fs::File::open(Self::path())?;
+        let mut fl = fs::File::open(api_data_dir.as_ref().join("client_secret.json"))?;
         let secret: ClientSecret = serde_json::from_reader(&mut fl)?;
 
         Ok(secret.installed)
@@ -55,7 +47,7 @@ impl ApiCreds {
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
-pub struct RespToken {
+pub struct TokenData {
     access_token: String,
     expires_in: u64,
     scope: String,
@@ -64,45 +56,31 @@ pub struct RespToken {
     refresh_token_expires_in: Option<u64>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-pub struct RespRefreshToken {
-    access_token: String,
-    expires_in: u64,
-    scope: String,
-    token_type: String,
-}
-
 #[derive(Debug, Serialize, Deserialize)]
-pub struct GoogleCreds {
-    token: RespToken,
+pub struct Credentials {
+    token: TokenData,
     token_ctime: SystemTime,
 }
 
-impl GoogleCreds {
-    fn path() -> path::PathBuf {
-        secure_storage_path().join("creds.json")
+impl Credentials {
+    fn flname<P: AsRef<path::Path>>(api_data_dir: &P) -> path::PathBuf {
+        api_data_dir.as_ref().join("creds.json")
     }
 
-    fn read() -> anyhow::Result<Option<GoogleCreds>> {
-        let path = Self::path();
-        if !fs::exists(path)? {
+    fn read<P: AsRef<path::Path>>(api_data_dir: &P) -> anyhow::Result<Option<Credentials>> {
+        let path = Self::flname(api_data_dir);
+        if !fs::exists(&path)? {
             return Ok(None);
         }
-        let mut fl = fs::File::open(Self::path())?;
-        let creds: Option<GoogleCreds> = serde_json::from_reader(&mut fl)?;
+        let mut fl = fs::File::open(&path)?;
+        let creds: Option<Credentials> = serde_json::from_reader(&mut fl)?;
 
         Ok(creds)
     }
 
-    fn write(&self) -> anyhow::Result<()> {
-        let mut fl = fs::File::create(Self::path())?;
+    fn write<P: AsRef<path::Path>>(&self, api_data_dir: &P) -> anyhow::Result<()> {
+        let mut fl = fs::File::create(Self::flname(api_data_dir))?;
         serde_json::to_writer(&mut fl, self)?;
-
-        Ok(())
-    }
-
-    fn delete(self) -> anyhow::Result<()> {
-        fs::remove_file(Self::path())?;
 
         Ok(())
     }
@@ -112,11 +90,11 @@ fn mk_loopback_url() -> String {
     format!("http://{IP_LOOPBACK}:{PORT_LOOPBACK}")
 }
 
-fn mk_auth_url(api: &ApiCreds) -> String {
+fn mk_auth_url(api_keys: &ApiKeys) -> String {
     let mut url = Url::parse(URL_OAUTH_AUTH).unwrap();
 
     url.query_pairs_mut()
-        .append_pair("client_id", api.id.as_str())
+        .append_pair("client_id", api_keys.id.as_str())
         .append_pair("redirect_uri", mk_loopback_url().as_str())
         .append_pair("response_type", "code")
         .append_pair("scope", OAUTH_SCOPE_DRIVE_APPDATA);
@@ -156,12 +134,12 @@ fn listen_for_code() -> anyhow::Result<String> {
     Ok(code.to_string())
 }
 
-fn exchange_code_for_token(api: &ApiCreds, code: String) -> anyhow::Result<RespToken> {
-    let token: RespToken = ureq::post(URL_OAUTH_TOKEN)
+fn exchange_code_for_token(api_keys: &ApiKeys, code: String) -> anyhow::Result<TokenData> {
+    let token: TokenData = ureq::post(URL_OAUTH_TOKEN)
         .send_form([
             ("code", code.as_str()),
-            ("client_id", api.id.as_str()),
-            ("client_secret", api.secret.as_str()),
+            ("client_id", api_keys.id.as_str()),
+            ("client_secret", api_keys.secret.as_str()),
             ("redirect_uri", mk_loopback_url().as_str()),
             ("grant_type", "authorization_code"),
         ])?
@@ -171,83 +149,111 @@ fn exchange_code_for_token(api: &ApiCreds, code: String) -> anyhow::Result<RespT
     Ok(token)
 }
 
-fn refresh_token(google: &mut GoogleCreds, api: &ApiCreds) -> anyhow::Result<()> {
-    let refresh_token: RespRefreshToken = ureq::post(URL_OAUTH_TOKEN)
+fn refresh_token(google: &mut Credentials, api_keys: &ApiKeys) -> anyhow::Result<()> {
+    #[derive(Serialize, Deserialize, Debug)]
+    pub struct RefreshTokenData {
+        access_token: String,
+        expires_in: u64,
+        scope: String,
+        token_type: String,
+    }
+
+    let refresh_token: RefreshTokenData = ureq::post(URL_OAUTH_TOKEN)
         .send_form([
-            ("client_id", api.id.as_str()),
-            ("client_secret", api.secret.as_str()),
-            ("grant_type", "authorization_code"),
+            ("client_id", api_keys.id.as_str()),
+            ("client_secret", api_keys.secret.as_str()),
+            ("grant_type", "refresh_token"),
             ("refresh_token", google.token.refresh_token.as_str()),
         ])?
         .body_mut()
         .read_json()?;
 
-    let RespRefreshToken {
+    let RefreshTokenData {
         access_token,
         expires_in,
         scope,
         token_type,
     } = refresh_token;
 
-    google.token = RespToken {
+    google.token = TokenData {
         access_token,
         expires_in,
         scope,
         token_type,
         ..google.token.clone()
     };
+    google.token_ctime = time::SystemTime::now();
 
     Ok(())
 }
 
-pub fn get_google_api_creds() -> anyhow::Result<GoogleCreds> {
-    let api = ApiCreds::read()?;
+fn request_credentials(api_keys: &ApiKeys) -> anyhow::Result<Credentials> {
+    let url = mk_auth_url(api_keys);
+    if webbrowser::open(&url).is_err() {
+        println!("Open this url in your browser: {url}");
+    }
+    let code = listen_for_code()?;
+    log::debug!("code: {code}");
 
-    let google = match GoogleCreds::read()? {
-        Some(mut google) => {
+    let token = exchange_code_for_token(api_keys, code)?;
+
+    let creds = Credentials {
+        token,
+        token_ctime: time::SystemTime::now(),
+    };
+
+    Ok(creds)
+}
+
+fn refresh_credentials(api_keys: &ApiKeys, creds: &mut Credentials) -> anyhow::Result<()> {
+    let now = time::SystemTime::now();
+
+    if let Some(refresh_token_expires_in) = creds.token.refresh_token_expires_in
+        && now
+            .duration_since(creds.token_ctime)
+            .unwrap_or(Duration::ZERO)
+            .as_secs()
+            >= refresh_token_expires_in
+    {
+        log::debug!("Refresh token expired");
+        *creds = request_credentials(api_keys)?;
+    } else {
+        let res = refresh_token(creds, api_keys);
+        if let Err(e) = res {
+            log::debug!("Couldn't refresh token: {e:?}");
+            *creds = request_credentials(api_keys)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn read_or_request_credentials<P: AsRef<path::Path>>(
+    api_data_dir: &P,
+) -> anyhow::Result<Credentials> {
+    let api_keys = ApiKeys::new(api_data_dir)?;
+
+    let creds = match Credentials::read(api_data_dir)? {
+        Some(mut creds) => {
             let now = time::SystemTime::now();
 
             if now
-                .duration_since(google.token_ctime)
+                .duration_since(creds.token_ctime)
                 .unwrap_or(Duration::ZERO)
                 .as_secs()
-                >= google.token.expires_in
+                >= creds.token.expires_in
             {
-                log::debug!("Token expired: {google:?}");
-
-                let res = refresh_token(&mut google, &api);
-                if res.is_err() {
-                    log::debug!("Couldn't refresh token: {res:?}");
-                    // starting over
-                    google.delete()?;
-
-                    return get_google_api_creds();
-                }
+                refresh_credentials(&api_keys, &mut creds)?;
             }
 
-            google
+            creds
         }
-        _ => {
-            let url = mk_auth_url(&api);
-            if webbrowser::open(&url).is_err() {
-                println!("Open this url in your browser: {url}");
-            }
-            let code = listen_for_code()?;
-            log::debug!("code: {code}");
-
-            let token = exchange_code_for_token(&api, code)?;
-
-            let google = GoogleCreds {
-                token,
-                token_ctime: time::SystemTime::now(),
-            };
-            google.write()?;
-
-            google
-        }
+        _ => request_credentials(&api_keys)?,
     };
 
-    Ok(google)
+    creds.write(api_data_dir)?;
+
+    Ok(creds)
 }
 
 #[derive(Debug, Deserialize)]
@@ -259,23 +265,37 @@ pub struct DriveFile {
     pub size: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct ListFilesResp {
-    files: Vec<DriveFile>,
-}
+pub struct DriveApi(Credentials);
 
-impl GoogleCreds {
-    fn req_get(&self, url: &str) -> ureq::RequestBuilder<WithoutBody> {
-        ureq::get(url).header("Authorization", &format!("Bearer {}", self.token.access_token))
+impl DriveApi {
+    pub fn new<P: AsRef<path::Path>>(api_data_dir: &P) -> anyhow::Result<Self> {
+        read_or_request_credentials(api_data_dir).map(DriveApi)
     }
 
-    fn req_post(&self, url: &str) -> ureq::RequestBuilder<WithBody> {
-        ureq::post(url).header("Authorization", &format!("Bearer {}", self.token.access_token))
+    fn req_get(&self, uri: &str) -> ureq::RequestBuilder<WithoutBody> {
+        ureq::get(uri).header(
+            "Authorization",
+            &format!("Bearer {}", self.0.token.access_token),
+        )
+    }
+
+    fn req_post(&self, uri: &str) -> ureq::RequestBuilder<WithBody> {
+        ureq::post(uri).header(
+            "Authorization",
+            &format!("Bearer {}", self.0.token.access_token),
+        )
+    }
+
+    fn req_delete(&self, uri: &str) -> ureq::RequestBuilder<WithoutBody> {
+        ureq::delete(uri).header(
+            "Authorization",
+            &format!("Bearer {}", self.0.token.access_token),
+        )
     }
 
     fn req_multipart(
         &self,
-        url: &str,
+        uri: &str,
         metadata: serde_json::Value,
         payload: &[u8],
     ) -> (ureq::RequestBuilder<WithBody>, Vec<u8>) {
@@ -297,13 +317,13 @@ impl GoogleCreds {
         let mut body = Vec::new();
 
         let req = self
-            .req_post(url)
+            .req_post(uri)
             .query("uploadType", "multipart")
             .content_type(format!("multipart/related; boundary={boundary}"));
 
         part_init(&mut body, boundary);
         part_header(&mut body, "Content-Type", "application/json; charset=UTF-8");
-        part_body(&mut body, metadata.as_str().unwrap().as_bytes());
+        part_body(&mut body, serde_json::to_vec(&metadata).unwrap().as_slice());
         part_init(&mut body, boundary);
         part_header(&mut body, "Content-Type", "application/octet-stream");
         part_body(&mut body, payload);
@@ -314,7 +334,12 @@ impl GoogleCreds {
     }
 
     pub fn list(&self) -> anyhow::Result<Vec<DriveFile>> {
-        let resp: ListFilesResp = self
+        #[derive(Debug, Deserialize)]
+        pub struct FileList {
+            pub files: Vec<DriveFile>,
+        }
+
+        let resp: FileList = self
             .req_get(URL_DRIVE_FILES)
             .query("spaces", "appDataFolder")
             .query("fields", "files(id,name,modifiedTime,size)")
@@ -326,14 +351,14 @@ impl GoogleCreds {
     }
 
     pub fn download(&self, file_id: &str) -> anyhow::Result<Vec<u8>> {
-        let resp = self
+        let contents = self
             .req_get(&format!("{URL_DRIVE_FILES}/{file_id}"))
             .query("alt", "media")
             .call()?
             .body_mut()
-            .read_json()?;
+            .read_to_vec()?;
 
-        Ok(resp)
+        Ok(contents)
     }
 
     pub fn upload(&self, name: &str, payload: &[u8]) -> anyhow::Result<String> {
@@ -351,6 +376,13 @@ impl GoogleCreds {
         let metadata = serde_json::json!({});
         let (req, body) = self.req_multipart(URL_DRIVE_UPLOAD, metadata, payload);
         let _: serde_json::Value = req.send(&body)?.body_mut().read_json()?;
+
+        Ok(())
+    }
+
+    pub fn delete(&self, file_id: &str) -> anyhow::Result<()> {
+        self.req_delete(&format!("{URL_DRIVE_FILES}/{file_id}"))
+            .call()?; // 204 No Content
 
         Ok(())
     }
