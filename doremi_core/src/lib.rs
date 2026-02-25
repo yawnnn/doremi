@@ -6,13 +6,15 @@ use rand::{self, Rng};
 use std::{
     fmt::{self, Debug},
     fs,
-    io::{self, Seek, SeekFrom},
+    io::{self, Seek, SeekFrom, Write},
     iter, ops, path,
     str::FromStr,
 };
 
+use crate::sync::*;
+
 /// Record's Vec
-/// [x, y, z]
+/// x, y, z
 #[derive(Debug, PartialEq, Eq)]
 struct RVec<T>(Vec<T>);
 
@@ -111,7 +113,7 @@ pub struct Record {
 }
 
 impl Record {
-    const SEP: &str = "\n---\n";
+    const SEP: &str = "\n---\n"; // TODO: somethign weirder, and/or escape it
 
     const K_ID: &str = "id";
     const K_CTIME: &str = "ctime"; // creation time
@@ -165,8 +167,16 @@ fn storage_path() -> path::PathBuf {
     path::PathBuf::from("data")
 }
 
+fn api_storage_path() -> path::PathBuf {
+    storage_path().join("api")
+}
+
+fn db_storage_path() -> path::PathBuf {
+    storage_path().join("db")
+}
+
 fn mk_record_path(date: Date) -> path::PathBuf {
-    storage_path().join(&format!("{}_{}.md", date.year(), date.month()))
+    db_storage_path().join(format!("{}_{}.md", date.year(), date.month()))
 }
 
 fn select<R: io::Read>(mut r: R) -> impl Iterator<Item = Record> {
@@ -192,7 +202,7 @@ fn insert<W: io::Write>(w: &mut W, records: &[Record]) -> io::Result<()> {
     Ok(())
 }
 
-fn new_record_inner<R: Rng, S: AsRef<str>>(
+fn new_with<R: Rng, S: AsRef<str>>(
     name: &str,
     tags: &[S],
     contents: &str,
@@ -220,13 +230,13 @@ fn new_record_inner<R: Rng, S: AsRef<str>>(
     Ok(id)
 }
 
-pub fn new_record<S: AsRef<str>>(name: &str, tags: &[S], contents: &str) -> anyhow::Result<u64> {
+pub fn new<S: AsRef<str>>(name: &str, tags: &[S], contents: &str) -> anyhow::Result<u64> {
     let mut rng = rand::rng();
     let now = DateTime::now();
-    new_record_inner(name, tags, contents, &mut rng, now)
+    new_with(name, tags, contents, &mut rng, now)
 }
 
-pub fn list_records(
+pub fn search(
     tags: Option<Vec<String>>,
     beg_dt: DateTime,
     end_dt: Option<DateTime>,
@@ -259,12 +269,74 @@ pub fn list_records(
     Ok(v)
 }
 
+pub fn list_local() -> anyhow::Result<Vec<path::PathBuf>> {
+    let v = fs::read_dir(db_storage_path()).map(|dir| {
+        dir.into_iter()
+            .filter_map(|entry| {
+                let path = entry.ok()?.path();
+                if path.is_file() && path.extension().is_some_and(|e| e == "md") {
+                    Some(path)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+    })?;
+
+    Ok(v)
+}
+
+pub fn push() -> anyhow::Result<()> {
+    let loc_files = list_local()?;
+    let api = DriveApi::new(&api_storage_path())?;
+    //let rem_files = api.list();
+
+    for file in loc_files {
+        let contents = fs::read_to_string(&file)?;
+        let stem = file.file_name().unwrap().to_str().unwrap();
+        api.upload(stem, contents.as_bytes())?;
+    }
+
+    Ok(())
+}
+
+pub fn pull() -> anyhow::Result<()> {
+    let dir = db_storage_path();
+
+    fs::remove_dir_all(&dir)?;
+    fs::create_dir(&dir)?;
+
+    let api = DriveApi::new(&api_storage_path())?;
+    let files = api.list()?;
+
+    for f in files {
+        let contents = api.download(&f.id)?;
+        let mut fl = fs::File::create(dir.join(f.name))?;
+        fl.write_all(&contents)?;
+    }
+
+    Ok(())
+}
+
+pub fn list_remote() -> anyhow::Result<Vec<DriveFile>> {
+    let api = DriveApi::new(&api_storage_path())?;
+    api.list()
+}
+
+pub fn clear_remote() -> anyhow::Result<()> {
+    let api = DriveApi::new(&api_storage_path())?;
+    let lst = api.list()?;
+    for f in lst {
+        api.delete(&f.id)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use std::convert::Infallible;
-
     use super::*;
     use date::interval::DateInterval;
+    use std::convert::Infallible;
 
     struct TestRng(u64);
 
@@ -422,8 +494,8 @@ lorem ipsum something something
             fs::remove_file(&flname).unwrap();
         }
 
-        new_record_inner(&name, tags1.as_slice(), &data, &mut rng, *dt1).unwrap();
-        new_record_inner(&name, tags2.as_slice(), &data, &mut rng, *dt2).unwrap();
+        new_with(&name, tags1.as_slice(), &data, &mut rng, *dt1).unwrap();
+        new_with(&name, tags2.as_slice(), &data, &mut rng, *dt2).unwrap();
 
         let s = fmt_patt2(&sdt1, &sdt2);
 
@@ -454,8 +526,8 @@ lorem ipsum something something
             fs::remove_file(&flname2).unwrap();
         }
 
-        new_record_inner(&name, tags1.as_slice(), &data, &mut rng, *dt1).unwrap();
-        new_record_inner(&name, tags2.as_slice(), &data, &mut rng, *dt2).unwrap();
+        new_with(&name, tags1.as_slice(), &data, &mut rng, *dt1).unwrap();
+        new_with(&name, tags2.as_slice(), &data, &mut rng, *dt2).unwrap();
 
         let s = fmt_patt2(&sdt1, &sdt2);
         let x = fs::read_to_string(&flname1).unwrap() + &fs::read_to_string(&flname2).unwrap();

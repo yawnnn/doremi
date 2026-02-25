@@ -1,7 +1,6 @@
 use clap::{Args, Parser, Subcommand};
 use date::Date;
 use datetime::DateTime;
-use doremi_core::*;
 
 #[derive(Parser, Debug)]
 #[command(version, about)]
@@ -13,19 +12,24 @@ pub struct Cli {
 #[derive(Subcommand, Debug)]
 pub enum Command {
     New(New),
-    List(List),
+    Search(Search),
+    Push(()),
+    Pull(()),
+    ListRemote(()),
+    ClearRemote(()),
+    // Open(Open),
 }
 
 #[derive(Args, Debug)]
 pub struct New {
     pub name: String,
-    pub contents: Option<String>,    // if omitted, read from stdin
+    pub contents: Option<String>, // if omitted, read from stdin
     #[arg(long)]
     pub tags: Option<String>,
 }
 
 #[derive(Args, Debug)]
-pub struct List {
+pub struct Search {
     #[arg(short = 'd', long = "beg-time")]
     pub beg_datetime: Option<String>,
     #[arg(short = 'D', long = "end-time")]
@@ -86,19 +90,30 @@ fn main() -> anyhow::Result<()> {
         Command::New(args) => {
             let contents = contents_or_stdin(args.contents)?;
             let tags = parse_tags(args.tags.as_deref()).unwrap_or_default();
-            let id = new_record(&args.name, tags.as_slice(), &contents);
+            let id = doremi_core::new(&args.name, tags.as_slice(), &contents);
             println!("new: {id:?}");
         }
-        Command::List(args) => {
+        Command::Search(args) => {
             let tags = parse_tags(args.tags.as_deref());
             let now = Date::today_utc();
             let beg_dt = parse_datetime(args.beg_datetime.as_deref())?
                 .unwrap_or(DateTime::ymd(now.year(), now.month(), 1).build());
             let end_dt = parse_datetime(args.end_datetime.as_deref())?;
-            let rs = list_records(tags, beg_dt, end_dt);
-            //println!("beg_dt: {beg_dt:?}");
-            //println!("end_dt: {end_dt:?}");
-            println!("list: {rs:#?}");
+            let res = doremi_core::search(tags, beg_dt, end_dt);
+            println!("{res:#?}");
+        }
+        Command::Push(()) => {
+            doremi_core::push()?;
+        }
+        Command::Pull(()) => {
+            doremi_core::pull()?;
+        }
+        Command::ListRemote(()) => {
+            let files = doremi_core::list_remote()?;
+            println!("{:#?}", files);
+        }
+        Command::ClearRemote(()) => {
+            doremi_core::clear_remote()?;
         }
     }
 
