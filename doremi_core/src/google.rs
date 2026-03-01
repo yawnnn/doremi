@@ -81,7 +81,7 @@ impl Credentials {
 
     fn write<P: AsRef<path::Path>>(&self, api_data_dir: &P) -> anyhow::Result<()> {
         let mut fl = fs::File::create(Self::flname(api_data_dir))?;
-        serde_json::to_writer(&mut fl, self)?;
+        serde_json::to_writer_pretty(&mut fl, self)?;
 
         Ok(())
     }

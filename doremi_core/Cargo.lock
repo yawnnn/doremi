@@ -246,6 +246,7 @@ version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "36a6990183689ad487ec797003a7350403661eaa3517605243af9eb659efe453"
 dependencies = [
+ "serde",
  "strptime",
 ]
 
@@ -256,6 +257,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "999d522551b32f03b57b2500c1f11e04741f5ffb138c7fb1672f0dbc8b036096"
 dependencies = [
  "date-rs",
+ "serde",
  "strptime",
 ]
 
