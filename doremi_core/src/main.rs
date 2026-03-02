@@ -24,7 +24,7 @@ pub enum Command {
 pub struct New {
     pub name: String,
     pub contents: Option<String>, // if omitted, read from stdin
-    #[arg(long)]
+    #[arg(short, long)]
     pub tags: Option<String>,
 }
 

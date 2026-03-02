@@ -112,7 +112,7 @@ pub fn push() -> anyhow::Result<()> {
     download_remote(&rem_dir)?;
     let mut rem_db = DB::load(&rem_dir)?;
 
-    rem_db.sync(&loc_db)?;
+    DB::sync(&mut rem_db, &loc_db)?;
     fs::remove_dir_all(rem_dir)?;
 
     upload_remote(&loc_dir)
@@ -126,9 +126,9 @@ pub fn pull() -> anyhow::Result<()> {
     download_remote(&rem_dir)?;
     let rem_db = DB::load(&rem_dir)?;
 
-    loc_db.sync(&rem_db)?;
+    DB::sync(&mut loc_db, &rem_db)?;
     fs::remove_dir_all(&loc_dir)?;
-    
+
     fs::rename(rem_dir, loc_dir).map_err(Into::into)
 }
 
@@ -341,5 +341,82 @@ lorem ipsum something something
 
         fs::remove_file(&flname1).unwrap();
         fs::remove_file(&flname2).unwrap();
+    }
+
+    fn test_sync_prep() -> anyhow::Result<(DB, DB, DB)> {
+        let mut rng = TestRng(0);
+
+        let load_db = |dir: &path::Path| {
+            if fs::exists(dir)? {
+                fs::remove_dir_all(dir)?;
+            }
+            DB::load(&dir)
+        };
+        let mut local_db = load_db(&local_db_dir()).unwrap();
+        let mut remote_db = load_db(&local_db_dir().join("remote")).unwrap();
+        let mut correct_db = load_db(&local_db_dir().join("correct")).unwrap();
+
+        let insert = |correct: &mut DB, db: &mut DB, r: Record| {
+            let now = DateTime::now();
+            db.insert(&r, now).unwrap();
+            correct.insert(&r, now).unwrap();
+        };
+        let mut insert_loc_rem = |correct: &mut DB, r: Record| {
+            let now = DateTime::now();
+            local_db.insert(&r, now).unwrap();
+            remote_db.insert(&r, now).unwrap();
+            correct.insert(&r, now).unwrap();
+        };
+
+        let rec = Record::new(rng.next_u64(), "first", &["tag1"], "data1");
+        insert_loc_rem(&mut correct_db, rec);
+        let rec = Record::new(rng.next_u64(), "second", &["tag2"], "data2");
+        insert_loc_rem(&mut correct_db, rec);
+
+        let rec = Record::new(rng.next_u64(), "remote", &["remote"], "remote");
+        insert(&mut correct_db, &mut remote_db, rec);
+
+        let rec = Record::new(rng.next_u64(), "local", &["local"], "local");
+        insert(&mut correct_db, &mut local_db, rec);
+
+        Ok((correct_db, local_db, remote_db))
+    }
+
+    fn eq_db_records(db1: &DB, db2: &DB) -> bool {
+        let flist1 = list_files(&db1.dir).unwrap();
+        let flist2 = list_files(&db2.dir).unwrap();
+
+        let mut recs1 = flist1
+            .into_iter()
+            .filter(|p| p.extension().unwrap() == "md")
+            .flat_map(|f| DB::select(fs::File::open(&f).unwrap()))
+            .collect::<Vec<_>>();
+        let mut recs2 = flist2
+            .into_iter()
+            .filter(|p| p.extension().unwrap() == "md")
+            .flat_map(|f| DB::select(fs::File::open(&f).unwrap()))
+            .collect::<Vec<_>>();
+        recs1.sort_by_key(|r| r.id);
+        recs2.sort_by_key(|r| r.id);
+
+        recs1 == recs2
+    }
+
+    #[test]
+    fn test_pull() {
+        let (correct_db, mut local_db, remote_db) = test_sync_prep().unwrap();
+        DB::sync(&mut local_db, &remote_db).unwrap();
+
+        assert_eq!(correct_db.meta, local_db.meta);
+        assert!(eq_db_records(&correct_db, &local_db));
+    }
+
+    #[test]
+    fn test_push() {
+        let (correct_db, local_db, mut remote_db) = test_sync_prep().unwrap();
+        DB::sync(&mut remote_db, &local_db).unwrap();
+
+        assert_eq!(correct_db.meta, remote_db.meta);
+        assert!(eq_db_records(&correct_db, &remote_db));
     }
 }

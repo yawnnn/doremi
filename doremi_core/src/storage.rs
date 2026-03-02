@@ -1,3 +1,4 @@
+use anyhow::Context;
 use date::interval::{DateInterval, MonthInterval};
 use datetime::{Date, DateTime, FromDate, interval::TimeInterval};
 use serde::de::{Deserializer, Error};
@@ -12,6 +13,7 @@ use std::{
     str::FromStr,
 };
 
+#[derive(Debug)]
 pub struct DB {
     pub dir: path::PathBuf,
     pub meta: Metadata,
@@ -19,6 +21,9 @@ pub struct DB {
 
 impl DB {
     pub fn load<P: AsRef<path::Path>>(dir: &P) -> anyhow::Result<Self> {
+        if !fs::exists(dir)? {
+            fs::create_dir_all(dir)?;
+        }
         let meta = Metadata::load(dir)?;
         Ok(Self {
             dir: dir.as_ref().to_path_buf(),
@@ -46,6 +51,8 @@ impl DB {
         Ok(rec.id)
     }
 
+    // TODO: don't read whole file
+    // TODO: should seek(0) before read, but then i cant take a buffer in tests
     pub fn select<R: io::Read>(mut r: R) -> impl Iterator<Item = Record> {
         let mut buf = String::new();
         r.read_to_string(&mut buf).unwrap();
@@ -61,20 +68,62 @@ impl DB {
         })
     }
 
-    pub fn sync(&mut self, _other: &Self) -> anyhow::Result<()> {
-        todo!()
+    fn find<R: io::Read + io::Seek>(mut r: R, id: u64) -> anyhow::Result<Record> {
+        r.seek(io::SeekFrom::Start(0))?;
+        DB::select(&mut r)
+            .find(|r| r.id == id)
+            .context(format!("record {id} not found"))
+    }
+
+    // TODO: delay reading records so i dont need to dwld everything
+    pub fn sync(dst: &mut DB, src: &DB) -> anyhow::Result<()> {
+        for (ym, month_meta) in &src.meta.months {
+            let mut new_recs = Vec::new();
+            let mut mod_recs = Vec::new();
+
+            let mut src_fl = fs::File::open(src.block_flname(*ym))?;
+            let mut dst_fl = fs::File::open(dst.block_flname(*ym))?;
+
+            for (id, src_meta) in &month_meta.0 {
+                match dst.meta.get(*id) {
+                    Some(dst_meta) => {
+                        assert!(src_meta.ctime == dst_meta.ctime);
+                        // TODO: if i want a more meaningful sync, i need more info
+                        let (fl, utime) = match src_meta.utime.cmp(&dst_meta.utime) {
+                            std::cmp::Ordering::Equal => continue,
+                            std::cmp::Ordering::Greater => (&mut src_fl, src_meta.utime),
+                            std::cmp::Ordering::Less => (&mut dst_fl, dst_meta.utime),
+                        };
+                        let rec = DB::find(fl, *id)?;
+                        mod_recs.push((rec, utime));
+                    }
+                    None => new_recs.push((*id, src_meta.ctime)),
+                }
+            }
+
+            for (id, ctime) in new_recs {
+                let rec = DB::find(&mut src_fl, id)?;
+                dst.insert(&rec, ctime)?;
+            }
+
+            for (rec, utime) in mod_recs {
+                dst.insert(&rec, utime)?;
+            }
+        }
+
+        Ok(())
     }
 }
 
 // TODO: use RDateTime?
-#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecMetadata {
     pub ctime: DateTime,
     pub utime: DateTime,
     // hash: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MonthMetadata(pub HashMap<u64, RecMetadata>);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -132,7 +181,7 @@ impl<'de> Deserialize<'de> for YearMonth {
     }
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Metadata {
     pub months: HashMap<YearMonth, MonthMetadata>,
 }
@@ -149,6 +198,7 @@ impl Metadata {
             let contents = fs::read_to_string(&flname)?;
             serde_json::from_str(&contents).map_err(Into::into)
         } else {
+            fs::File::create(flname)?;
             Ok(Metadata::default())
         }
     }
@@ -289,7 +339,7 @@ impl Record {
     const K_NAME: &str = "name";
 
     pub fn new<S: AsRef<str>>(id: u64, name: &str, tags: &[S], contents: &str) -> Self {
-        Self {
+        Record {
             id,
             name: name.into(),
             tags: RVec(tags.iter().map(|t| t.as_ref().into()).collect()),
