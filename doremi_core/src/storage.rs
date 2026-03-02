@@ -1,6 +1,5 @@
 use anyhow::Context;
-use date::interval::{DateInterval, MonthInterval};
-use datetime::{Date, DateTime, FromDate, interval::TimeInterval};
+use datetime::{Date, DateTime};
 use serde::de::{Deserializer, Error};
 use serde::ser::Serializer;
 use serde::{Deserialize, Serialize};
@@ -9,7 +8,7 @@ use std::{
     fmt::{self, Debug},
     fs,
     io::{self, Seek},
-    iter, ops, path,
+    iter, path,
     str::FromStr,
 };
 
@@ -115,7 +114,6 @@ impl DB {
     }
 }
 
-// TODO: use RDateTime?
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecMetadata {
     pub ctime: DateTime,
@@ -258,68 +256,6 @@ impl<T: FromStr> FromStr for RVec<T> {
             .collect::<Option<Vec<_>>>()
             .map(|v| RVec(v))
             .ok_or(())
-    }
-}
-
-// TODO: remove this
-/// Record's DateTime
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub struct RDateTime(DateTime);
-
-impl RDateTime {
-    const FMT: &str = "%Y-%m-%d %H:%M:%S";
-
-    fn with_date_and_time(date: Date, time: DateTime) -> RDateTime {
-        RDateTime(date.hms(time.hour(), time.minute(), time.second()).build())
-    }
-}
-
-impl ops::Deref for RDateTime {
-    type Target = DateTime;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl From<DateTime> for RDateTime {
-    fn from(value: DateTime) -> Self {
-        RDateTime(DateTime::from_timestamp(value.as_seconds(), 0))
-    }
-}
-
-impl ops::Add<TimeInterval> for RDateTime {
-    type Output = Self;
-    fn add(self, rhs: TimeInterval) -> Self::Output {
-        RDateTime(self.0 + rhs)
-    }
-}
-
-impl ops::Add<DateInterval> for RDateTime {
-    type Output = Self;
-    fn add(self, rhs: DateInterval) -> Self::Output {
-        let date = self.0.date() + rhs;
-        Self::with_date_and_time(date, self.0)
-    }
-}
-
-impl ops::Add<MonthInterval> for RDateTime {
-    type Output = Self;
-    fn add(self, rhs: MonthInterval) -> Self::Output {
-        let date = self.0.date() + rhs;
-        Self::with_date_and_time(date, self.0)
-    }
-}
-
-impl FromStr for RDateTime {
-    type Err = ();
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(RDateTime(DateTime::parse(s, Self::FMT).map_err(|_| ())?))
-    }
-}
-
-impl fmt::Display for RDateTime {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", &self.0.format(Self::FMT))
     }
 }
 

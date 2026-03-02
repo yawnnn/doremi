@@ -257,8 +257,8 @@ lorem ipsum something something
 
     #[test]
     fn test_new() {
-        let dt1: RDateTime = DateTime::now().into();
-        let dt2: RDateTime = dt1 + TimeInterval::new(61, 0);
+        let dt1 = DateTime::now();
+        let dt2 = dt1 + TimeInterval::new(61, 0);
         let mut rng = TestRng(0);
 
         assert_eq!(dt1.date(), dt2.date());
@@ -269,12 +269,10 @@ lorem ipsum something something
         let tags2 = ["test".to_owned()].to_owned();
         let data = "lorem ipsum something something".to_owned();
 
-        let mut db = DB::load(&local_db_dir()).unwrap();
+        let dir = local_db_dir();
+        let _ = fs::remove_dir_all(&dir);
+        let mut db = DB::load(&dir).unwrap();
         let flname = db.block_flname(date.into());
-
-        if fs::exists(&flname).unwrap() {
-            fs::remove_file(&flname).unwrap();
-        }
 
         let r1 = Record {
             id: rng.next_u64(),
@@ -288,20 +286,20 @@ lorem ipsum something something
             tags: RVec(tags2.iter().map(|t| t.into()).collect()),
             contents: data.clone(),
         };
-        db.insert(&r1, *dt1).unwrap();
-        db.insert(&r2, *dt2).unwrap();
+        db.insert(&r1, dt1).unwrap();
+        db.insert(&r2, dt2).unwrap();
 
         let s = fmt_patt2();
 
         assert_eq!(s, fs::read_to_string(&flname).unwrap());
-
-        fs::remove_file(&flname).unwrap();
     }
 
     #[test]
     fn test_new_two_months() {
-        let dt1: RDateTime = DateTime::now().into();
-        let dt2: RDateTime = dt1 + MonthInterval::new(1);
+        let dt1 = DateTime::now();
+        let d1 = dt1.date();
+        let d2 = d1 + MonthInterval::new(1);
+        let dt2 = dt1 + TimeInterval::new((d2 - d1).days() as i64 * 24 * 3600, 0);
         let mut rng = TestRng(0);
 
         let name = "test_new".to_owned();
@@ -309,15 +307,11 @@ lorem ipsum something something
         let tags2 = ["test".to_owned()].to_owned();
         let data = "lorem ipsum something something".to_owned();
 
-        let mut db = DB::load(&local_db_dir()).unwrap();
+        let dir = local_db_dir();
+        let _ = fs::remove_dir_all(&dir);
+        let mut db = DB::load(&dir).unwrap();
         let flname1 = db.block_flname(dt1.date().into());
-        if fs::exists(&flname1).unwrap() {
-            fs::remove_file(&flname1).unwrap();
-        }
         let flname2 = db.block_flname(dt2.date().into());
-        if fs::exists(&flname2).unwrap() {
-            fs::remove_file(&flname2).unwrap();
-        }
 
         let r1 = Record {
             id: rng.next_u64(),
@@ -331,16 +325,13 @@ lorem ipsum something something
             tags: RVec(tags2.iter().map(|t| t.into()).collect()),
             contents: data.clone(),
         };
-        db.insert(&r1, *dt1).unwrap();
-        db.insert(&r2, *dt2).unwrap();
+        db.insert(&r1, dt1).unwrap();
+        db.insert(&r2, dt2).unwrap();
 
         let s = fmt_patt2();
         let x = fs::read_to_string(&flname1).unwrap() + &fs::read_to_string(&flname2).unwrap();
 
         assert_eq!(s, x);
-
-        fs::remove_file(&flname1).unwrap();
-        fs::remove_file(&flname2).unwrap();
     }
 
     fn test_sync_prep() -> anyhow::Result<(DB, DB, DB)> {
