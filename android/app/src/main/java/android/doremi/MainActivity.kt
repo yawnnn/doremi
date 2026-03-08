@@ -58,17 +58,24 @@ class NotesViewModel(
 fun ViewNote(note: Note) {
     // TODO:
     //  - prettier (everything)
-    //  - sub Row w/ Card (that fills horizontally)?
     //  - editing inline
     //  - clickable links in body
-    Row(modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 4.dp)
+    ) {
         // TODO: move into viewmodel or something. there's only one note open at a time
         var isOpen by remember { mutableStateOf(false) }
         val surfaceColor by animateColorAsState(
-            if (isOpen) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
+            if (isOpen) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
         )
 
-        Column(modifier = Modifier.clickable() { isOpen = !isOpen }) {
+        Column(
+            modifier = Modifier
+                .clickable { isOpen = !isOpen }
+                .padding(12.dp)
+        ) {
             Text(
                 text = note.name,
                 color = MaterialTheme.colorScheme.secondary,
@@ -84,11 +91,10 @@ fun ViewNote(note: Note) {
             Spacer(modifier = Modifier.height(4.dp))
             Surface(
                 shape = MaterialTheme.shapes.medium,
-                shadowElevation = 1.dp,
                 color = surfaceColor,
                 modifier = Modifier
                     .animateContentSize()
-                    .padding(1.dp)
+                    .fillMaxWidth()
             ) {
                 Text(
                     text = note.body,
