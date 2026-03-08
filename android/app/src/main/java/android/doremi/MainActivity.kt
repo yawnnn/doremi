@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -106,11 +107,11 @@ fun ViewNotes(vm: NotesViewModel) {
         Column() {
             // TODO:
             //  - disappear after scroll down
-            //  - size and position properly
             TextField(
                 value = vm.filter,
                 onValueChange = { vm.filter = it },
                 label = { Text("Search") },
+                modifier = Modifier.fillMaxWidth()
             )
             // TODO:
             //  - group by month/show month headers
