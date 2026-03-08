@@ -2,14 +2,10 @@ package android.doremi
 
 import android.doremi.ui.theme.DoremiTheme
 import android.os.Bundle
-import android.view.Surface
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -17,23 +13,21 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.ViewModel
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -41,51 +35,64 @@ class MainActivity : ComponentActivity() {
         //enableEdgeToEdge()
         setContent {
             DoremiTheme() {
-                Surface(modifier = Modifier.fillMaxSize()) {
-                    Conversation(Samples.samples)
-                }
+                // TODO: read notes from app's folder
+                ViewNotes(NotesViewModel(TestData.notes))
             }
         }
     }
 }
 
-data class Message(val author: String, val body: String)
+data class Note(val name: String, val tags: List<String>, val body: String, val ctime: Long = 0)
+
+class NotesViewModel(
+    val notes: List<Note>
+) : ViewModel() {
+    // var notes = mutableStateListOf<Note>().also { it.addAll(notes) }
+
+    // eg: one_word_match "two-word match" n:name t:"two-word tag" "b:three-word body content"
+    var filter by mutableStateOf("")
+}
 
 @Composable
-fun MessageCard(msg: Message) {
-    Row(modifier = Modifier.padding(all = 8.dp)) {
-        Image(
-            painter = painterResource(R.drawable.ic_launcher_background),
-            contentDescription = "Launcher",
-            modifier = Modifier
-                .size(40.dp)
-                .clip(CircleShape)
-                .border(1.5.dp, MaterialTheme.colorScheme.secondary, CircleShape)
-        )
-        Spacer(modifier = Modifier.width(8.dp))
-
-        var isExpanded by remember { mutableStateOf(false) }
+fun ViewNote(note: Note) {
+    // TODO:
+    //  - prettier (everything)
+    //  - sub Row w/ Card (that fills horizontally)?
+    //  - editing inline
+    //  - clickable links in body
+    Row(modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)) {
+        // TODO: move into viewmodel or something. there's only one note open at a time
+        var isOpen by remember { mutableStateOf(false) }
         val surfaceColor by animateColorAsState(
-            if (isExpanded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
+            if (isOpen) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
         )
 
-        Column (modifier = Modifier.clickable() { isExpanded = !isExpanded }) {
+        Column(modifier = Modifier.clickable() { isOpen = !isOpen }) {
             Text(
-                text = msg.author,
+                text = note.name,
                 color = MaterialTheme.colorScheme.secondary,
                 style = MaterialTheme.typography.titleSmall
             )
+            if (note.tags.isNotEmpty()) {
+                Text(
+                    text = note.tags.joinToString(", "),
+                    color = MaterialTheme.colorScheme.secondary,
+                    style = MaterialTheme.typography.labelSmall
+                )
+            }
             Spacer(modifier = Modifier.height(4.dp))
             Surface(
                 shape = MaterialTheme.shapes.medium,
                 shadowElevation = 1.dp,
                 color = surfaceColor,
-                modifier = Modifier.animateContentSize().padding(1.dp)
+                modifier = Modifier
+                    .animateContentSize()
+                    .padding(1.dp)
             ) {
                 Text(
-                    text = msg.body,
+                    text = note.body,
                     modifier = Modifier.padding(all = 4.dp),
-                    maxLines = if (isExpanded) Int.MAX_VALUE else 1,
+                    maxLines = if (isOpen) Int.MAX_VALUE else 1,
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
@@ -94,23 +101,39 @@ fun MessageCard(msg: Message) {
 }
 
 @Composable
-fun Conversation(messages: List<Message>) {
-    LazyColumn() {
-        items(messages) { msg ->
-            MessageCard(msg)
+fun ViewNotes(vm: NotesViewModel) {
+    Surface(modifier = Modifier.fillMaxSize()) {
+        Column() {
+            // TODO:
+            //  - disappear after scroll down
+            //  - size and position properly
+            TextField(
+                value = vm.filter,
+                onValueChange = { vm.filter = it },
+                label = { Text("Search") },
+            )
+            // TODO:
+            //  - group by month/show month headers
+            LazyColumn() {
+                items(vm.notes) { note ->
+                    ViewNote(note)
+                }
+            }
         }
     }
 }
 
-object Samples {
+object TestData {
     // Sample conversation data
-    val samples = listOf(
-        Message(
+    val notes = listOf(
+        Note(
             "Lexi",
+            listOf("Pippo"),
             "Test...Test...Test..."
         ),
-        Message(
+        Note(
             "Lexi",
+            listOf("Pippo", "pluto"),
             """List of Android versions:
             |Android KitKat (API 19)
             |Android Lollipop (API 21)
@@ -122,52 +145,63 @@ object Samples {
             |Android 11 (API 30)
             |Android 12 (API 31)""".trim()
         ),
-        Message(
+        Note(
             "Lexi",
+            listOf(),
             """I think Kotlin is my favorite programming language.
             |It's so much fun!""".trim()
         ),
-        Message(
+        Note(
             "Lexi",
+            listOf("Franco", "Programming", "Rust"),
             "Searching for alternatives to XML layouts..."
         ),
-        Message(
+        Note(
             "Lexi",
+            listOf(),
             """Hey, take a look at Jetpack Compose, it's great!
             |It's the Android's modern toolkit for building native UI.
             |It simplifies and accelerates UI development on Android.
             |Less code, powerful tools, and intuitive Kotlin APIs :)""".trim()
         ),
-        Message(
+        Note(
             "Lexi",
+            listOf(),
             "It's available from API 21+ :)"
         ),
-        Message(
+        Note(
             "Lexi",
+            listOf(),
             "Writing Kotlin for UI seems so natural, Compose where have you been all my life?"
         ),
-        Message(
+        Note(
             "Lexi",
+            listOf(),
             "Android Studio next version's name is Arctic Fox"
         ),
-        Message(
+        Note(
             "Lexi",
+            listOf(),
             "Android Studio Arctic Fox tooling for Compose is top notch ^_^"
         ),
-        Message(
+        Note(
             "Lexi",
+            listOf(),
             "I didn't know you can now run the emulator directly from Android Studio"
         ),
-        Message(
+        Note(
             "Lexi",
+            listOf(),
             "Compose Previews are great to check quickly how a composable layout looks like"
         ),
-        Message(
+        Note(
             "Lexi",
-            "Previews are also interactive after enabling the experimental setting"
+            listOf(),
+            "https://www.google.com"
         ),
-        Message(
+        Note(
             "Lexi",
+            listOf(),
             "Have you tried writing build.gradle with KTS?"
         ),
     )
