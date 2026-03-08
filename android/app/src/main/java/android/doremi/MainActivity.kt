@@ -1,5 +1,6 @@
 package android.doremi
 
+import android.content.Intent
 import android.doremi.ui.theme.DoremiTheme
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -24,12 +25,15 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -50,15 +54,34 @@ class MainActivity : ComponentActivity() {
                     NotesViewModel(initialNotes)
                 }
 
+                // Handle shared text
+                LaunchedEffect(intent) {
+                    if (intent?.action == Intent.ACTION_SEND && intent.type == "text/plain") {
+                        val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT)
+                        if (sharedText != null) {
+                            viewModel.isSharedAction = true
+                            viewModel.editingNote = Note(
+                                id = "note_${System.currentTimeMillis()}",
+                                name = "",
+                                tags = emptyList(),
+                                body = sharedText,
+                                ctime = System.currentTimeMillis()
+                            )
+                        }
+                    }
+                }
+
                 if (viewModel.editingNote != null) {
                     EditNote(
                         note = viewModel.editingNote!!,
                         onSave = { updatedNote ->
                             viewModel.saveUpdatedNote(context, updatedNote)
                             viewModel.editingNote = null
+                            if (viewModel.isSharedAction) finish()
                         },
                         onCancel = {
                             viewModel.editingNote = null
+                            if (viewModel.isSharedAction) finish()
                         }
                     )
                 } else {
@@ -128,6 +151,7 @@ class NotesViewModel(
     }
     var filter by mutableStateOf("")  // eg: one_word_match "two-word match" n:name t:"two-word tag" b:"three-word body content"
     var editingNote by mutableStateOf<Note?>(null)
+    var isSharedAction by mutableStateOf(false)
 
     fun saveUpdatedNote(context: android.content.Context, updatedNote: Note) {
         val index = this@NotesViewModel.notes.indexOfFirst { it.id == updatedNote.id }
@@ -145,7 +169,7 @@ class NotesViewModel(
 fun ViewNote(note: Note, onClick: () -> Unit) {
     // TODO:
     //  - prettier (everything)
-    //  - clickable links in body
+    //  - clickable links in body + preview
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -239,6 +263,7 @@ fun ViewNotes(vm: NotesViewModel) {
                 )
                 Button(
                     onClick = {
+                        vm.isSharedAction = false
                         vm.editingNote = Note(
                             id = "note_${System.currentTimeMillis()}",
                             name = "",
@@ -270,7 +295,10 @@ fun ViewNotes(vm: NotesViewModel) {
                             textAlign = TextAlign.Center
                         )
                     }
-                    ViewNote(note, onClick = { vm.editingNote = note })
+                    ViewNote(note, onClick = { 
+                        vm.isSharedAction = false
+                        vm.editingNote = note 
+                    })
                 }
             }
         }
@@ -282,9 +310,14 @@ fun EditNote(note: Note, onSave: (Note) -> Unit, onCancel: () -> Unit) {
     var name by remember { mutableStateOf(note.name) }
     var tagsString by remember { mutableStateOf(note.tags.joinToString(", ")) }
     var body by remember { mutableStateOf(note.body) }
+    val focusRequester = remember { FocusRequester() }
 
     BackHandler {
         onCancel()
+    }
+
+    LaunchedEffect(Unit) {
+        focusRequester.requestFocus()
     }
 
     Surface(modifier = Modifier.fillMaxSize()) {
@@ -293,7 +326,9 @@ fun EditNote(note: Note, onSave: (Note) -> Unit, onCancel: () -> Unit) {
                 value = name,
                 onValueChange = { name = it },
                 label = { Text("Name") },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusRequester(focusRequester),
                 singleLine = true,
             )
             Spacer(modifier = Modifier.height(8.dp))
