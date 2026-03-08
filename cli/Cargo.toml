@@ -1,0 +1,12 @@
+[package]
+name = "cli"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+lib = { path = "../lib" }
+anyhow = "1.0.101"
+date-rs = { version = "1.6.0", default-features = false }
+datetime-rs = { version = "1.11.3", default-features = false, features = ["serde"] }
+env_logger = { version = "0.11.8", default-features = false }
+clap = { version = "4.5.58", features = ["derive"] }

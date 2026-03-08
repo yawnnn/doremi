@@ -90,7 +90,7 @@ fn main() -> anyhow::Result<()> {
         Command::New(args) => {
             let contents = contents_or_stdin(args.contents)?;
             let tags = parse_tags(args.tags.as_deref()).unwrap_or_default();
-            let id = doremi_core::new(&args.name, tags.as_slice(), &contents);
+            let id = lib::new(&args.name, tags.as_slice(), &contents);
             println!("new: {id:?}");
         }
         Command::Search(args) => {
@@ -99,21 +99,21 @@ fn main() -> anyhow::Result<()> {
             let beg_dt = parse_datetime(args.beg_datetime.as_deref())?
                 .unwrap_or(DateTime::ymd(now.year(), now.month(), 1).build());
             let end_dt = parse_datetime(args.end_datetime.as_deref())?;
-            let res = doremi_core::search(tags, beg_dt, end_dt);
+            let res = lib::search(tags, beg_dt, end_dt);
             println!("{res:#?}");
         }
         Command::Push(()) => {
-            doremi_core::push()?;
+            lib::push()?;
         }
         Command::Pull(()) => {
-            doremi_core::pull()?;
+            lib::pull()?;
         }
         Command::ListRemote(()) => {
-            let files = doremi_core::list_remote()?;
+            let files = lib::list_remote()?;
             println!("{:#?}", files);
         }
         Command::ClearRemote(()) => {
-            doremi_core::clear_remote()?;
+            lib::clear_remote()?;
         }
     }
 
