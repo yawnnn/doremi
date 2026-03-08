@@ -3,18 +3,21 @@ package android.doremi
 import android.doremi.ui.theme.DoremiTheme
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredHeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -22,6 +25,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -34,14 +38,26 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            DoremiTheme() {
+            DoremiTheme {
+                val context = this
                 val viewModel = remember {
-                    NotesViewModel(loadNotes(this))
+                    val initialNotes = loadNotes(context)
+                    NotesViewModel(initialNotes)
                 }
-                ViewNotes(viewModel)
 
-                loadNotes(this).forEach {
-                    saveNote(this, it)
+                if (viewModel.editingNote != null) {
+                    EditNote(
+                        note = viewModel.editingNote!!,
+                        onSave = { updatedNote ->
+                            viewModel.saveUpdatedNote(context, updatedNote)
+                            viewModel.editingNote = null
+                        },
+                        onCancel = {
+                            viewModel.editingNote = null
+                        }
+                    )
+                } else {
+                    ViewNotes(viewModel)
                 }
             }
         }
@@ -86,6 +102,11 @@ private fun saveNote(context: android.content.Context, note: Note) {
     file.writeText(note.toFileContent())
 }
 
+// TODO:
+//  - autodetect already existing tags
+//  - checkbox list of tags to filter in OR rather than AND
+//  - normalize tags (and names?)
+//  - note's priority
 data class Note(
     val id: String,
     val name: String,
@@ -95,24 +116,31 @@ data class Note(
 )
 
 class NotesViewModel(
-    val notes: List<Note>
+    notes: List<Note>
 ) : ViewModel() {
-    // var notes = mutableStateListOf<Note>().also { it.addAll(notes) }
+    val notes = mutableStateListOf<Note>().also { it.addAll(notes) }
+    var filter by mutableStateOf("")  // eg: one_word_match "two-word match" n:name t:"two-word tag" b:"three-word body content"
+    var editingNote by mutableStateOf<Note?>(null)
 
-    // eg: one_word_match "two-word match" n:name t:"two-word tag" b:"three-word body content"
-    var filter by mutableStateOf("")
+    fun saveUpdatedNote(context: android.content.Context, updatedNote: Note) {
+        val index = this@NotesViewModel.notes.indexOfFirst { it.id == updatedNote.id }
+        if (index != -1) {
+            this@NotesViewModel.notes[index] = updatedNote
+            saveNote(context, updatedNote)
+        }
+    }
 }
 
 @Composable
-fun ViewNote(note: Note) {
+fun ViewNote(note: Note, onClick: () -> Unit) {
     // TODO:
     //  - prettier (everything)
-    //  - editing inline
     //  - clickable links in body
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 8.dp, vertical = 4.dp)
+            .clickable { onClick() }
     ) {
         Column(modifier = Modifier.padding(all = 8.dp)) {
             Text(
@@ -127,7 +155,6 @@ fun ViewNote(note: Note) {
                     style = MaterialTheme.typography.labelSmall
                 )
             }
-            //Spacer(modifier = Modifier.height(4.dp))
             Surface(
                 shape = MaterialTheme.shapes.medium,
                 color = MaterialTheme.colorScheme.surfaceVariant,
@@ -138,7 +165,6 @@ fun ViewNote(note: Note) {
                 Text(
                     text = note.body,
                     modifier = Modifier.padding(horizontal = 4.dp),
-                    //maxLines = if (isOpen) Int.MAX_VALUE else 1,
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
@@ -179,20 +205,74 @@ fun ViewNotes(vm: NotesViewModel) {
     val notes = remember(vm.notes, filters) { vm.notes.filter { it.matches(filters) } }
 
     Surface(modifier = Modifier.fillMaxSize()) {
-        Column() {
-            // TODO:
-            //  - disappear after scroll down
+        // TODO:
+        //  - disappear after scroll down
+        Column {
             TextField(
                 value = vm.filter,
                 onValueChange = { vm.filter = it },
                 label = { Text("Search") },
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
             )
             // TODO:
             //  - group by month/show month headers
-            LazyColumn() {
+            LazyColumn {
                 items(notes) { note ->
-                    ViewNote(note)
+                    ViewNote(note, onClick = { vm.editingNote = note })
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun EditNote(note: Note, onSave: (Note) -> Unit, onCancel: () -> Unit) {
+    var name by remember { mutableStateOf(note.name) }
+    var tagsString by remember { mutableStateOf(note.tags.joinToString(", ")) }
+    var body by remember { mutableStateOf(note.body) }
+
+    BackHandler {
+        onCancel()
+    }
+
+    Surface(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            TextField(
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("Name") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            TextField(
+                value = tagsString,
+                onValueChange = { tagsString = it },
+                label = { Text("Tags") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            TextField(
+                value = body,
+                onValueChange = { body = it },
+                label = { Text("Body") },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            Row {
+                Button(onClick = onCancel) {
+                    Text("Cancel")
+                }
+                Spacer(modifier = Modifier.weight(1f))
+                Button(onClick = {
+                    val tags = tagsString.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+                    onSave(note.copy(name = name, tags = tags, body = body))
+                }) {
+                    Text("Save")
                 }
             }
         }
