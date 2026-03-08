@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.requiredHeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
@@ -126,8 +125,10 @@ class NotesViewModel(
         val index = this@NotesViewModel.notes.indexOfFirst { it.id == updatedNote.id }
         if (index != -1) {
             this@NotesViewModel.notes[index] = updatedNote
-            saveNote(context, updatedNote)
+        } else {
+            this@NotesViewModel.notes.add(updatedNote)
         }
+        saveNote(context, updatedNote)
     }
 }
 
@@ -208,17 +209,33 @@ fun ViewNotes(vm: NotesViewModel) {
         // TODO:
         //  - disappear after scroll down
         Column {
-            TextField(
-                value = vm.filter,
-                onValueChange = { vm.filter = it },
-                label = { Text("Search") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-            )
+            Row(modifier = Modifier.fillMaxWidth().padding(8.dp)) {
+                TextField(
+                    value = vm.filter,
+                    onValueChange = { vm.filter = it },
+                    label = { Text("Search") },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                )
+                Button(
+                    onClick = {
+                        vm.editingNote = Note(
+                            id = "note_${System.currentTimeMillis()}",
+                            name = "",
+                            tags = emptyList(),
+                            body = "",
+                            ctime = System.currentTimeMillis()
+                        )
+                    },
+                    modifier = Modifier.padding(start = 8.dp)
+                ) {
+                    Text("New")
+                }
+            }
             // TODO:
             //  - group by month/show month headers
             LazyColumn {
-                items(notes) { note ->
+                items(notes, key = { it.id }) { note ->
                     ViewNote(note, onClick = { vm.editingNote = note })
                 }
             }
