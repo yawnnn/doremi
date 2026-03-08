@@ -6,6 +6,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -15,7 +16,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
@@ -29,9 +30,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -85,7 +91,7 @@ private fun loadNotes(context: android.content.Context): List<Note> {
                 name = testNote.name,
                 tags = testNote.tags,
                 body = testNote.body,
-                ctime = System.currentTimeMillis()
+                ctime = System.currentTimeMillis() - idx * 86400000L * 15
             )
             val file = File(dir, "${note.id}.txt")
             file.writeText(note.toFileContent())
@@ -117,7 +123,9 @@ data class Note(
 class NotesViewModel(
     notes: List<Note>
 ) : ViewModel() {
-    val notes = mutableStateListOf<Note>().also { it.addAll(notes) }
+    val notes = mutableStateListOf<Note>().also {
+        it.addAll(notes.sortedBy { n -> n.ctime })
+    }
     var filter by mutableStateOf("")  // eg: one_word_match "two-word match" n:name t:"two-word tag" b:"three-word body content"
     var editingNote by mutableStateOf<Note?>(null)
 
@@ -128,6 +136,7 @@ class NotesViewModel(
         } else {
             this@NotesViewModel.notes.add(updatedNote)
         }
+        this@NotesViewModel.notes.sortedBy { it.ctime }
         saveNote(context, updatedNote)
     }
 }
@@ -200,16 +209,27 @@ private fun Note.matches(filters: List<Filter>): Boolean {
     }
 }
 
+private fun getMonthYear(timestamp: Long): String {
+    val sdf = SimpleDateFormat("MMMM yyyy", Locale.getDefault())
+    return sdf.format(Date(timestamp))
+}
+
 @Composable
 fun ViewNotes(vm: NotesViewModel) {
     val filters = remember(vm.filter) { parseFilters(vm.filter) }
-    val notes = remember(vm.notes, filters) { vm.notes.filter { it.matches(filters) } }
+    val notes = remember(vm.notes, filters) {
+        vm.notes.filter { it.matches(filters) }
+    }
 
     Surface(modifier = Modifier.fillMaxSize()) {
         // TODO:
         //  - disappear after scroll down
         Column {
-            Row(modifier = Modifier.fillMaxWidth().padding(8.dp)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(8.dp)
+            ) {
                 TextField(
                     value = vm.filter,
                     onValueChange = { vm.filter = it },
@@ -232,10 +252,24 @@ fun ViewNotes(vm: NotesViewModel) {
                     Text("New")
                 }
             }
-            // TODO:
-            //  - group by month/show month headers
             LazyColumn {
-                items(notes, key = { it.id }) { note ->
+                itemsIndexed(notes, key = { _, note -> note.id }) { index, note ->
+                    val curr = getMonthYear(note.ctime)
+                    val prev = if (index > 0) getMonthYear(notes[index - 1].ctime) else null
+
+                    if (curr != prev) {
+                        Text(
+                            text = curr,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(MaterialTheme.colorScheme.secondaryContainer),
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            ),
+                            textAlign = TextAlign.Center
+                        )
+                    }
                     ViewNote(note, onClick = { vm.editingNote = note })
                 }
             }
