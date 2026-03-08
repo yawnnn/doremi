@@ -8,7 +8,6 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -23,7 +22,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -101,7 +99,7 @@ class NotesViewModel(
 ) : ViewModel() {
     // var notes = mutableStateListOf<Note>().also { it.addAll(notes) }
 
-    // eg: one_word_match "two-word match" n:name t:"two-word tag" "b:three-word body content"
+    // eg: one_word_match "two-word match" n:name t:"two-word tag" b:"three-word body content"
     var filter by mutableStateOf("")
 }
 
@@ -158,8 +156,38 @@ fun ViewNote(note: Note) {
     }
 }
 
+private data class Filter(val kind: String?, val value: String)
+
+private fun parseFilters(query: String): List<Filter> {
+    val regex = Regex("""(\w:)?("([^"]+)"|(\S+))""")
+    return regex.findAll(query).map { match ->
+        val kind = match.groups[1]?.value?.removeSuffix(":")
+        val value = match.groups[3]?.value ?: match.groups[4]?.value ?: ""
+        Filter(kind, value)
+    }.toList()
+}
+
+private fun Note.matches(filters: List<Filter>): Boolean {
+    if (filters.isEmpty()) return true
+    return filters.all { c ->
+        when (c.kind) {
+            "n" -> name.contains(c.value, ignoreCase = true)
+            "t" -> tags.any { it.contains(c.value, ignoreCase = true) }
+            "b" -> body.contains(c.value, ignoreCase = true)
+            else -> {
+                name.contains(c.value, ignoreCase = true) ||
+                        body.contains(c.value, ignoreCase = true) ||
+                        tags.any { it.contains(c.value, ignoreCase = true) }
+            }
+        }
+    }
+}
+
 @Composable
 fun ViewNotes(vm: NotesViewModel) {
+    val filters = remember(vm.filter) { parseFilters(vm.filter) }
+    val notes = remember(vm.notes, filters) { vm.notes.filter { it.matches(filters) } }
+
     Surface(modifier = Modifier.fillMaxSize()) {
         Column() {
             // TODO:
@@ -173,7 +201,7 @@ fun ViewNotes(vm: NotesViewModel) {
             // TODO:
             //  - group by month/show month headers
             LazyColumn() {
-                items(vm.notes) { note ->
+                items(notes) { note ->
                     ViewNote(note)
                 }
             }
