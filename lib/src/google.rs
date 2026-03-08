@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs,
     io::{Read, Write},
-    iter, net, path,
+    iter, net, path::{self, Path},
     time::{self, Duration, SystemTime},
 };
 use ureq::{
@@ -12,6 +12,10 @@ use ureq::{
     typestate::{WithBody, WithoutBody},
 };
 use url::Url;
+
+pub fn dir_google<P: AsRef<Path>>(basedir: &P) -> path::PathBuf {
+    basedir.as_ref().join("google")
+}
 
 // TODO: some of these are provided in the client_secret or google's responses
 const URL_OAUTH_AUTH: &str = "https://accounts.google.com/o/oauth2/v2/auth";

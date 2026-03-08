@@ -196,7 +196,6 @@ impl Metadata {
             let contents = fs::read_to_string(&flname)?;
             serde_json::from_str(&contents).map_err(Into::into)
         } else {
-            fs::File::create(flname)?;
             Ok(Metadata::default())
         }
     }

@@ -1,6 +1,11 @@
 use clap::{Args, Parser, Subcommand};
 use date::Date;
 use datetime::DateTime;
+use std::{
+    env,
+    io::{self, Read},
+    path,
+};
 
 #[derive(Parser, Debug)]
 #[command(version, about)]
@@ -37,8 +42,6 @@ pub struct Search {
     #[arg(short = 't', long)]
     pub tags: Option<String>,
 }
-
-use std::io::{self, Read};
 
 fn contents_or_stdin(data: Option<String>) -> anyhow::Result<String> {
     match data {
@@ -85,12 +88,13 @@ fn main() -> anyhow::Result<()> {
     env_logger::init();
 
     let cli = Cli::parse();
+    let basedir = path::PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("appdata");
 
     match cli.command {
         Command::New(args) => {
             let contents = contents_or_stdin(args.contents)?;
             let tags = parse_tags(args.tags.as_deref()).unwrap_or_default();
-            let id = lib::new(&args.name, tags.as_slice(), &contents);
+            let id = lib::new(&basedir, &args.name, tags.as_slice(), &contents);
             println!("new: {id:?}");
         }
         Command::Search(args) => {
@@ -99,21 +103,21 @@ fn main() -> anyhow::Result<()> {
             let beg_dt = parse_datetime(args.beg_datetime.as_deref())?
                 .unwrap_or(DateTime::ymd(now.year(), now.month(), 1).build());
             let end_dt = parse_datetime(args.end_datetime.as_deref())?;
-            let res = lib::search(tags, beg_dt, end_dt);
+            let res = lib::search(&basedir, tags, beg_dt, end_dt);
             println!("{res:#?}");
         }
         Command::Push(()) => {
-            lib::push()?;
+            lib::push(&basedir)?;
         }
         Command::Pull(()) => {
-            lib::pull()?;
+            lib::pull(&basedir)?;
         }
         Command::ListRemote(()) => {
-            let files = lib::list_remote()?;
+            let files = lib::list_remote(&basedir)?;
             println!("{:#?}", files);
         }
         Command::ClearRemote(()) => {
-            lib::clear_remote()?;
+            lib::clear_remote(&basedir)?;
         }
     }
 
