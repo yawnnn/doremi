@@ -36,6 +36,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
@@ -343,7 +346,24 @@ fun ViewNotes(doremi: Doremi) {
                     Text("New")
                 }
             }
-            LazyColumn {
+            val listState = rememberLazyListState(initialFirstVisibleItemIndex = (notes.lastIndex).coerceAtLeast(0))
+
+            // Keep track of previous list size to decide whether to auto-scroll
+            var prevSize by remember { mutableIntStateOf(0) }
+
+            // When notes change: if the user was at the bottom, scroll to the new bottom.
+            LaunchedEffect(notes.size) {
+                val layout = listState.layoutInfo
+                val visible = layout.visibleItemsInfo
+                val lastVisibleIndex = if (visible.isNotEmpty()) visible.last().index else listState.firstVisibleItemIndex
+                val wasAtBottom = if (prevSize == 0) true else lastVisibleIndex >= prevSize - 1
+                if (wasAtBottom && notes.isNotEmpty()) {
+                    listState.animateScrollToItem(notes.lastIndex)
+                }
+                prevSize = notes.size
+            }
+
+            LazyColumn(state = listState) {
                 itemsIndexed(notes, key = { _, note -> note.id }) { index, note ->
                     val curr = getMonthYear(note.ctime)
                     val prev = if (index > 0) getMonthYear(notes[index - 1].ctime) else null
