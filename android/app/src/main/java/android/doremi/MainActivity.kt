@@ -36,6 +36,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.foundation.text.ClickableText
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.mutableIntStateOf
@@ -297,13 +302,38 @@ fun ViewNote(note: Note, onClick: () -> Unit) {
                     style = MaterialTheme.typography.labelMedium
                 )
             }
-            Text(
-                text = note.body,
+            val uriHandler = LocalUriHandler.current
+            val annotated = buildAnnotatedString {
+                val bodyText = note.body
+                var last = 0
+                val urlRegex = Regex("https?://\\S+")
+                for (m in urlRegex.findAll(bodyText)) {
+                    val start = m.range.first
+                    val end = m.range.last + 1
+                    if (start > last) append(bodyText.substring(last, start))
+                    val url = m.value
+                    pushStyle(SpanStyle(color = MaterialTheme.colorScheme.primary, textDecoration = TextDecoration.Underline))
+                    pushStringAnnotation(tag = "URL", annotation = url)
+                    append(url)
+                    pop()
+                    pop()
+                    last = end
+                }
+                if (last < bodyText.length) append(bodyText.substring(last))
+            }
+            // TODO: change, it's deprecated
+            ClickableText(
+                text = annotated,
                 modifier = Modifier
                     .animateContentSize()
                     .fillMaxWidth()
                     .padding(horizontal = 4.dp),
-                style = MaterialTheme.typography.bodyMedium
+                style = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
+                onClick = { offset ->
+                    annotated.getStringAnnotations(tag = "URL", start = offset, end = offset).firstOrNull()?.let {
+                        uriHandler.openUri(it.item)
+                    }
+                }
             )
         }
     }
