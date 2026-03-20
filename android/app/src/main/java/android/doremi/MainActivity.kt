@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material3.Button
@@ -26,23 +27,23 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -94,7 +95,10 @@ class MainActivity : ComponentActivity() {
 
                 val finishAction = {
                     if (isShareAction) finish()
-                    else doremi.setState(DoremiState.VIEW, view = DoremiView(Doremi.readNotes(this)))
+                    else doremi.setState(
+                        DoremiState.VIEW,
+                        view = DoremiView(Doremi.readNotes(this))
+                    )
                 }
 
                 when (doremi.state) {
@@ -318,10 +322,12 @@ fun ViewNotes(doremi: Doremi) {
     val filters = remember(view.flt) { view.parseFilters(view.flt) }
     val notes = view.lst.filter { it.matches(filters) }
 
-    Surface(modifier = Modifier.fillMaxSize()) {
+    Surface(
+        modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface
+    ) {
         // TODO:
         //  - disappear after scroll down
-        Column {
+        Column(modifier = Modifier.safeDrawingPadding()) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -370,7 +376,11 @@ fun ViewNotes(doremi: Doremi) {
 }
 
 @Composable
-fun EditNote(edit: DoremiEdit, onSave: (String, List<String>, String) -> Unit, onCancel: () -> Unit) {
+fun EditNote(
+    edit: DoremiEdit,
+    onSave: (String, List<String>, String) -> Unit,
+    onCancel: () -> Unit
+) {
     val note = edit.note ?: Note(body = edit.startBody)
     var name by remember(note.id, note.ctime) { mutableStateOf(note.name) }
     var tagsString by remember(note.id, note.ctime) { mutableStateOf(note.tags.joinToString(", ")) }
@@ -385,8 +395,14 @@ fun EditNote(edit: DoremiEdit, onSave: (String, List<String>, String) -> Unit, o
         focusRequester.requestFocus()
     }
 
-    Surface(modifier = Modifier.fillMaxSize()) {
-        Column(modifier = Modifier.padding(16.dp)) {
+    Surface(
+        modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface
+    ) {
+        Column(
+            modifier = Modifier
+                .safeDrawingPadding()
+                .padding(16.dp)
+        ) {
             TextField(
                 value = name,
                 onValueChange = { name = it },
