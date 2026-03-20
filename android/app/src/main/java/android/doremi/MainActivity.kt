@@ -1,5 +1,6 @@
 package android.doremi
 
+import android.content.Context
 import android.content.Intent
 import android.doremi.ui.theme.DoremiTheme
 import android.os.Bundle
@@ -34,10 +35,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.ViewModel
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -46,136 +47,216 @@ import java.util.Locale
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
         setContent {
             DoremiTheme {
-                val context = this
-                val viewModel = remember {
-                    val initialNotes = loadNotes(context)
-                    NotesViewModel(initialNotes)
-                }
+                val doremi = remember { Doremi(this) }
+                var isShareAction by remember { mutableStateOf(false) }
 
-                // Handle shared text
                 LaunchedEffect(intent) {
-                    if (intent?.action == Intent.ACTION_SEND && intent.type == "text/plain") {
-                        val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT)
-                        if (sharedText != null) {
-                            viewModel.isSharedAction = true
-                            viewModel.editingNote = Note(
-                                id = "note_${System.currentTimeMillis()}",
-                                name = "",
-                                tags = emptyList(),
-                                body = sharedText,
-                                ctime = System.currentTimeMillis()
-                            )
+                    when (intent?.action) {
+                        Intent.ACTION_SEND -> {
+                            when (intent.type) {
+                                "text/plain" -> {
+                                    intent.getStringExtra(Intent.EXTRA_TEXT)?.let {
+                                        doremi.setState(
+                                            DoremiState.EDIT, edit = DoremiEdit(startBody = it)
+                                        )
+                                    }
+                                    isShareAction = true
+                                }
+
+                                else -> throw RuntimeException("Unsupported type: ${intent.type}")
+                            }
                         }
                     }
                 }
 
-                if (viewModel.editingNote != null) {
-                    EditNote(
-                        note = viewModel.editingNote!!,
-                        onSave = { updatedNote ->
-                            viewModel.saveUpdatedNote(context, updatedNote)
-                            viewModel.editingNote = null
-                            if (viewModel.isSharedAction) finish()
-                        },
-                        onCancel = {
-                            viewModel.editingNote = null
-                            if (viewModel.isSharedAction) finish()
-                        }
-                    )
-                } else {
-                    ViewNotes(viewModel)
+                val finishAction = {
+                    if (isShareAction) finish()
+                    else doremi.setState(DoremiState.VIEW, view = DoremiView(Doremi.readNotes(this)))
+                }
+
+                when (doremi.state) {
+                    DoremiState.VIEW -> ViewNotes(doremi)
+                    DoremiState.EDIT -> doremi.edit?.let { edit ->
+                        EditNote(edit = edit, onSave = { name, tags, body ->
+                            val note = edit.note
+
+                            if (note == null) {
+                                Doremi.newNote(this, name, tags, body)
+                            } else {
+                                val update = Note(
+                                    id = note.id,
+                                    name = name,
+                                    tags = tags,
+                                    body = body,
+                                    ctime = note.ctime
+                                )
+                                Doremi.writeNote(this, update)
+                            }
+                            finishAction()
+                        }, onCancel = { finishAction() })
+                    }
                 }
             }
         }
     }
 }
 
-private fun Note.toFileContent(): String = "$ctime\n$name\n${tags.joinToString(",")}\n$body"
-
-private fun File.toNote(): Note {
-    val lines = readLines()
-    val ctime = lines.getOrNull(0)?.toLongOrNull() ?: 0L
-    val name = lines.getOrNull(1) ?: ""
-    val tags = lines.getOrNull(2)?.split(",")?.filter { it.isNotBlank() } ?: emptyList()
-    val body = lines.drop(3).joinToString("\n")
-    return Note(id = nameWithoutExtension, name = name, tags = tags, body = body, ctime = ctime)
-}
-
-private fun loadNotes(context: android.content.Context): List<Note> {
-    val dir = File(context.filesDir, "notes")
-    if (!dir.exists()) {
-        dir.mkdirs()
-        // seed the first time
-        TestData.notes.forEachIndexed { idx, testNote ->
-            val note = Note(
-                id = "note_$idx",
-                name = testNote.name,
-                tags = testNote.tags,
-                body = testNote.body,
-                ctime = System.currentTimeMillis() - idx * 86400000L * 15
-            )
-            val file = File(dir, "${note.id}.txt")
-            file.writeText(note.toFileContent())
-        }
-    }
-    return dir.listFiles()?.filter { it.extension == "txt" }?.map { it.toNote() } ?: emptyList()
-}
-
-private fun saveNote(context: android.content.Context, note: Note) {
-    val dir = File(context.filesDir, "notes")
-    if (!dir.exists()) dir.mkdirs()
-    val file = File(dir, "${note.id}.txt")
-    file.writeText(note.toFileContent())
-}
 
 // TODO:
 //  - autodetect already existing tags
 //  - checkbox list of tags to filter in OR rather than AND
 //  - normalize tags (and names?)
 //  - note's priority
-data class Note(
-    val id: String,
-    val name: String,
-    val tags: List<String>,
-    val body: String,
+class Note(
+    val id: String = "",
+    val name: String = "",
+    val tags: List<String> = emptyList(),
+    val body: String = "",
     val ctime: Long = 0
-)
+) {
+    fun serialize(): String = "$id\n$ctime\n$name\n${tags.joinToString(",")}\n$body"
 
-class NotesViewModel(
-    notes: List<Note>
-) : ViewModel() {
-    val notes = mutableStateListOf<Note>().also {
-        it.addAll(notes.sortedBy { n -> n.ctime })
-    }
-    var filter by mutableStateOf("")  // eg: one_word_match "two-word match" n:name t:"two-word tag" b:"three-word body content"
-    var editingNote by mutableStateOf<Note?>(null)
-    var isSharedAction by mutableStateOf(false)
-
-    fun saveUpdatedNote(context: android.content.Context, updatedNote: Note) {
-        val index = this@NotesViewModel.notes.indexOfFirst { it.id == updatedNote.id }
-        if (index != -1) {
-            this@NotesViewModel.notes[index] = updatedNote
-        } else {
-            this@NotesViewModel.notes.add(updatedNote)
+    fun matches(filters: List<Filter>): Boolean {
+        if (filters.isEmpty()) return true
+        return filters.all { flt ->
+            when (flt.kind) {
+                FilterKind.Name -> name.contains(flt.value, ignoreCase = true)
+                FilterKind.Tag -> tags.any { it.contains(flt.value, ignoreCase = true) }
+                FilterKind.Body -> body.contains(flt.value, ignoreCase = true)
+                FilterKind.Everything -> {
+                    name.contains(flt.value, ignoreCase = true) || body.contains(
+                        flt.value, ignoreCase = true
+                    ) || tags.any { it.contains(flt.value, ignoreCase = true) }
+                }
+            }
         }
-        this@NotesViewModel.notes.sortedBy { it.ctime }
-        saveNote(context, updatedNote)
+    }
+
+    companion object {
+        fun deserialize(lines: List<String>): Note {
+            val id = lines.getOrNull(0) ?: ""
+            val ctime = lines.getOrNull(1)?.toLongOrNull() ?: 0L
+            val name = lines.getOrNull(2) ?: ""
+            val tags = lines.getOrNull(3)?.split(",")?.filter { it.isNotBlank() } ?: emptyList()
+            val body = lines.drop(4).joinToString("\n")
+            return Note(
+                id = id, name = name, tags = tags, body = body, ctime = ctime
+            )
+        }
+    }
+}
+
+enum class FilterKind {
+    Name, Tag, Body, Everything
+}
+
+data class Filter(val kind: FilterKind, val value: String)
+
+enum class DoremiState {
+    VIEW, EDIT,
+}
+
+class DoremiView(lst: List<Note>) {
+    var flt by mutableStateOf("")
+    val lst = mutableStateListOf<Note>().also {
+        it.addAll(lst.sortedBy { note -> note.ctime })
+    }
+
+    fun parseFilters(flt: String): List<Filter> {
+        val regex = Regex("""(\w:)?("([^"]+)"|(\S+))""")
+        return regex.findAll(flt).map { match ->
+            val kind = when (match.groups[1]?.value?.removeSuffix(":")) {
+                "n" -> FilterKind.Name
+                "t" -> FilterKind.Tag
+                "b" -> FilterKind.Body
+                else -> FilterKind.Everything
+            }
+            val value = match.groups[3]?.value ?: match.groups[4]?.value ?: ""
+            Filter(kind, value)
+        }.toList()
+    }
+
+    fun updateView(note: Note) {
+        val idx = this.lst.indexOfFirst { it.id == note.id }
+        when (idx) {
+            -1 -> this.lst.add(note)
+            else -> this.lst[idx] = note
+        }
+        this.lst.sortBy { it.ctime }
+    }
+}
+
+data class DoremiEdit(val note: Note? = null, val startBody: String = "")
+
+class Doremi(context: Context) {
+    var state by mutableStateOf(DoremiState.VIEW)
+    var view: DoremiView? by mutableStateOf(DoremiView(readNotes(context)))  // when <viewState> == LIST
+    var edit: DoremiEdit? by mutableStateOf(null)                                   // when <viewState> == EDIT
+
+    fun setState(state: DoremiState, view: DoremiView? = null, edit: DoremiEdit? = null) {
+        this.state = state
+        when (state) {
+            DoremiState.VIEW -> this.view = view
+            DoremiState.EDIT -> this.edit = edit
+        }
+    }
+
+    companion object {
+        fun readNotes(context: Context): List<Note> {
+            val dir = File(context.filesDir, "notes")
+            if (!dir.exists()) {
+                dir.mkdirs()
+                // seed for testing. TODO: remove
+                TestData.notes.forEachIndexed { idx, note ->
+                    val note = Note(
+                        id = "$idx",
+                        name = note.name,
+                        tags = note.tags,
+                        body = note.body,
+                        ctime = System.currentTimeMillis() - idx * 86400000L * 15
+                    )
+                    val file = File(dir, "${idx}.txt")
+                    file.writeText(note.serialize())
+                }
+            }
+            return dir.listFiles()?.filter { it.extension == "txt" }?.map {
+                Note.deserialize(it.readLines())
+            } ?: emptyList()
+        }
+
+        fun writeNote(context: Context, note: Note) {
+            val dir = File(context.filesDir, "notes")
+            if (!dir.exists()) dir.mkdirs()
+            val file = File(dir, "${note.id}.txt")
+            file.writeText(note.serialize())
+        }
+
+        fun newNote(context: Context, name: String, tags: List<String>, body: String) {
+            writeNote(
+                context, Note(
+                    id = "${System.currentTimeMillis()}",
+                    name = name,
+                    tags = tags,
+                    body = body,
+                    ctime = System.currentTimeMillis(),
+                )
+            )
+        }
     }
 }
 
 @Composable
 fun ViewNote(note: Note, onClick: () -> Unit) {
     // TODO:
-    //  - prettier (everything)
     //  - clickable links in body + preview
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 8.dp, vertical = 4.dp)
-            .clickable { onClick() }
-    ) {
+            .clickable(role = Role.Button) { onClick() }) {
         Column(modifier = Modifier.padding(all = 8.dp)) {
             Text(
                 text = note.name,
@@ -206,44 +287,16 @@ fun ViewNote(note: Note, onClick: () -> Unit) {
     }
 }
 
-private data class Filter(val kind: String?, val value: String)
-
-private fun parseFilters(query: String): List<Filter> {
-    val regex = Regex("""(\w:)?("([^"]+)"|(\S+))""")
-    return regex.findAll(query).map { match ->
-        val kind = match.groups[1]?.value?.removeSuffix(":")
-        val value = match.groups[3]?.value ?: match.groups[4]?.value ?: ""
-        Filter(kind, value)
-    }.toList()
-}
-
-private fun Note.matches(filters: List<Filter>): Boolean {
-    if (filters.isEmpty()) return true
-    return filters.all { c ->
-        when (c.kind) {
-            "n" -> name.contains(c.value, ignoreCase = true)
-            "t" -> tags.any { it.contains(c.value, ignoreCase = true) }
-            "b" -> body.contains(c.value, ignoreCase = true)
-            else -> {
-                name.contains(c.value, ignoreCase = true) ||
-                        body.contains(c.value, ignoreCase = true) ||
-                        tags.any { it.contains(c.value, ignoreCase = true) }
-            }
-        }
-    }
-}
-
 private fun getMonthYear(timestamp: Long): String {
     val sdf = SimpleDateFormat("MMMM yyyy", Locale.getDefault())
     return sdf.format(Date(timestamp))
 }
 
 @Composable
-fun ViewNotes(vm: NotesViewModel) {
-    val filters = remember(vm.filter) { parseFilters(vm.filter) }
-    val notes = remember(vm.notes, filters) {
-        vm.notes.filter { it.matches(filters) }
-    }
+fun ViewNotes(doremi: Doremi) {
+    val view = doremi.view ?: return
+    val filters = remember(view.flt) { view.parseFilters(view.flt) }
+    val notes = view.lst.filter { it.matches(filters) }
 
     Surface(modifier = Modifier.fillMaxSize()) {
         // TODO:
@@ -255,24 +308,16 @@ fun ViewNotes(vm: NotesViewModel) {
                     .padding(8.dp)
             ) {
                 TextField(
-                    value = vm.filter,
-                    onValueChange = { vm.filter = it },
+                    value = view.flt,
+                    onValueChange = { view.flt = it },
                     label = { Text("Search") },
                     modifier = Modifier.weight(1f),
                     singleLine = true,
                 )
                 Button(
                     onClick = {
-                        vm.isSharedAction = false
-                        vm.editingNote = Note(
-                            id = "note_${System.currentTimeMillis()}",
-                            name = "",
-                            tags = emptyList(),
-                            body = "",
-                            ctime = System.currentTimeMillis()
-                        )
-                    },
-                    modifier = Modifier.padding(start = 8.dp)
+                        doremi.setState(DoremiState.EDIT, edit = DoremiEdit())
+                    }, modifier = Modifier.padding(start = 8.dp)
                 ) {
                     Text("New")
                 }
@@ -295,9 +340,8 @@ fun ViewNotes(vm: NotesViewModel) {
                             textAlign = TextAlign.Center
                         )
                     }
-                    ViewNote(note, onClick = { 
-                        vm.isSharedAction = false
-                        vm.editingNote = note 
+                    ViewNote(note, onClick = {
+                        doremi.setState(DoremiState.EDIT, edit = DoremiEdit(note))
                     })
                 }
             }
@@ -306,10 +350,11 @@ fun ViewNotes(vm: NotesViewModel) {
 }
 
 @Composable
-fun EditNote(note: Note, onSave: (Note) -> Unit, onCancel: () -> Unit) {
-    var name by remember { mutableStateOf(note.name) }
-    var tagsString by remember { mutableStateOf(note.tags.joinToString(", ")) }
-    var body by remember { mutableStateOf(note.body) }
+fun EditNote(edit: DoremiEdit, onSave: (String, List<String>, String) -> Unit, onCancel: () -> Unit) {
+    val note = edit.note ?: Note(body = edit.startBody)
+    var name by remember(note.id, note.ctime) { mutableStateOf(note.name) }
+    var tagsString by remember(note.id, note.ctime) { mutableStateOf(note.tags.joinToString(", ")) }
+    var body by remember(note.id, note.ctime) { mutableStateOf(note.body) }
     val focusRequester = remember { FocusRequester() }
 
     BackHandler {
@@ -356,7 +401,7 @@ fun EditNote(note: Note, onSave: (Note) -> Unit, onCancel: () -> Unit) {
                 Spacer(modifier = Modifier.weight(1f))
                 Button(onClick = {
                     val tags = tagsString.split(",").map { it.trim() }.filter { it.isNotEmpty() }
-                    onSave(note.copy(name = name, tags = tags, body = body))
+                    onSave(name, tags, body)
                 }) {
                     Text("Save")
                 }
