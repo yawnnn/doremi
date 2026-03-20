@@ -10,6 +10,7 @@ import androidx.activity.compose.setContent
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -20,6 +21,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.text.BasicText
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
@@ -30,24 +33,23 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.platform.LocalUriHandler
-import androidx.compose.foundation.text.ClickableText
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.style.TextDecoration
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -104,8 +106,7 @@ class MainActivity : ComponentActivity() {
                 val finishAction = {
                     if (isShareAction) finish()
                     else doremi.setState(
-                        DoremiState.VIEW,
-                        view = DoremiView(Doremi.readNotes(this))
+                        DoremiState.VIEW, view = DoremiView(Doremi.readNotes(this))
                     )
                 }
 
@@ -282,8 +283,7 @@ class Doremi(context: Context) {
 
 @Composable
 fun ViewNote(note: Note, onClick: () -> Unit) {
-    // TODO:
-    //  - clickable links in body + preview
+    // TODO: preview of links
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -312,7 +312,12 @@ fun ViewNote(note: Note, onClick: () -> Unit) {
                     val end = m.range.last + 1
                     if (start > last) append(bodyText.substring(last, start))
                     val url = m.value
-                    pushStyle(SpanStyle(color = MaterialTheme.colorScheme.primary, textDecoration = TextDecoration.Underline))
+                    pushStyle(
+                        SpanStyle(
+                            color = MaterialTheme.colorScheme.primary,
+                            textDecoration = TextDecoration.Underline
+                        )
+                    )
                     pushStringAnnotation(tag = "URL", annotation = url)
                     append(url)
                     pop()
@@ -321,20 +326,32 @@ fun ViewNote(note: Note, onClick: () -> Unit) {
                 }
                 if (last < bodyText.length) append(bodyText.substring(last))
             }
-            // TODO: change, it's deprecated
-            ClickableText(
+            // expansion of ClickableText, which is deprecated
+            val onClick: (Int) -> Unit = { offset ->
+                annotated.getStringAnnotations(tag = "URL", start = offset, end = offset)
+                    .firstOrNull()?.let {
+                        uriHandler.openUri(it.item)
+                    }
+            }
+            val layoutResult = remember { mutableStateOf<TextLayoutResult?>(null) }
+            val pressIndicator = Modifier.pointerInput(onClick) {
+                detectTapGestures { pos ->
+                    layoutResult.value?.let { layoutResult ->
+                        onClick(layoutResult.getOffsetForPosition(pos))
+                    }
+                }
+            }
+            BasicText(
                 text = annotated,
                 modifier = Modifier
                     .animateContentSize()
                     .fillMaxWidth()
-                    .padding(horizontal = 4.dp),
+                    .padding(horizontal = 4.dp)
+                    .then(pressIndicator),
                 style = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
-                onClick = { offset ->
-                    annotated.getStringAnnotations(tag = "URL", start = offset, end = offset).firstOrNull()?.let {
-                        uriHandler.openUri(it.item)
-                    }
-                }
-            )
+                onTextLayout = {
+                    layoutResult.value = it
+                })
         }
     }
 }
@@ -376,7 +393,9 @@ fun ViewNotes(doremi: Doremi) {
                     Text("New")
                 }
             }
-            val listState = rememberLazyListState(initialFirstVisibleItemIndex = (notes.lastIndex).coerceAtLeast(0))
+            val listState = rememberLazyListState(
+                initialFirstVisibleItemIndex = (notes.lastIndex).coerceAtLeast(0)
+            )
 
             // Keep track of previous list size to decide whether to auto-scroll
             var prevSize by remember { mutableIntStateOf(0) }
@@ -385,7 +404,8 @@ fun ViewNotes(doremi: Doremi) {
             LaunchedEffect(notes.size) {
                 val layout = listState.layoutInfo
                 val visible = layout.visibleItemsInfo
-                val lastVisibleIndex = if (visible.isNotEmpty()) visible.last().index else listState.firstVisibleItemIndex
+                val lastVisibleIndex =
+                    if (visible.isNotEmpty()) visible.last().index else listState.firstVisibleItemIndex
                 val wasAtBottom = if (prevSize == 0) true else lastVisibleIndex >= prevSize - 1
                 if (wasAtBottom && notes.isNotEmpty()) {
                     listState.animateScrollToItem(notes.lastIndex)
@@ -422,9 +442,7 @@ fun ViewNotes(doremi: Doremi) {
 
 @Composable
 fun EditNote(
-    edit: DoremiEdit,
-    onSave: (String, List<String>, String) -> Unit,
-    onCancel: () -> Unit
+    edit: DoremiEdit, onSave: (String, List<String>, String) -> Unit, onCancel: () -> Unit
 ) {
     val note = edit.note ?: Note(body = edit.startBody)
     var name by remember(note.id, note.ctime) { mutableStateOf(note.name) }
