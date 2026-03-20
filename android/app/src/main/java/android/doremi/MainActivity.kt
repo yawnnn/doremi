@@ -291,22 +291,17 @@ fun ViewNote(note: Note, onClick: () -> Unit) {
                 Text(
                     text = note.tags.joinToString(", "),
                     color = MaterialTheme.colorScheme.secondary,
-                    style = MaterialTheme.typography.labelSmall
+                    style = MaterialTheme.typography.labelMedium
                 )
             }
-            Surface(
-                shape = MaterialTheme.shapes.medium,
-                color = MaterialTheme.colorScheme.surfaceVariant,
+            Text(
+                text = note.body,
                 modifier = Modifier
                     .animateContentSize()
                     .fillMaxWidth()
-            ) {
-                Text(
-                    text = note.body,
-                    modifier = Modifier.padding(horizontal = 4.dp),
-                    style = MaterialTheme.typography.bodyMedium
-                )
-            }
+                    .padding(horizontal = 4.dp),
+                style = MaterialTheme.typography.bodyMedium
+            )
         }
     }
 }
