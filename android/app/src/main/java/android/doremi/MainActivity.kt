@@ -327,17 +327,21 @@ fun ViewNote(note: Note, onClick: () -> Unit) {
                 if (last < bodyText.length) append(bodyText.substring(last))
             }
             // expansion of ClickableText, which is deprecated
-            val onClick: (Int) -> Unit = { offset ->
-                annotated.getStringAnnotations(tag = "URL", start = offset, end = offset)
+            val onTextClick: (Int) -> Unit = { offset ->
+                val urlFound = annotated.getStringAnnotations(tag = "URL", start = offset, end = offset)
                     .firstOrNull()?.let {
                         uriHandler.openUri(it.item)
-                    }
+                        true
+                    } ?: false
+                if (!urlFound) {
+                    onClick()
+                }
             }
             val layoutResult = remember { mutableStateOf<TextLayoutResult?>(null) }
-            val pressIndicator = Modifier.pointerInput(onClick) {
+            val pressIndicator = Modifier.pointerInput(onTextClick) {
                 detectTapGestures { pos ->
                     layoutResult.value?.let { layoutResult ->
-                        onClick(layoutResult.getOffsetForPosition(pos))
+                        onTextClick(layoutResult.getOffsetForPosition(pos))
                     }
                 }
             }
