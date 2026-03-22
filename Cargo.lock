@@ -598,6 +598,7 @@ dependencies = [
  "date-rs",
  "datetime-rs",
  "form_urlencoded",
+ "jni",
  "log",
  "rand",
  "serde",

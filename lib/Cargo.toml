@@ -15,3 +15,9 @@ form_urlencoded = { version = "1.2.2", default-features = false }
 ureq = { version = "3.2.0", features = ["json"] }
 log = "0.4.29"
 rand = { version = "0.10.0", default-features = false, features = ["thread_rng"] }
+
+[lib]
+crate-type = ["lib", "cdylib"]
+
+[target.aarch64-linux-android.dependencies]
+jni = "0.21"

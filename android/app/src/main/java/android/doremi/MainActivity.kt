@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.doremi.ui.theme.DoremiTheme
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -50,11 +51,11 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -119,14 +120,7 @@ class MainActivity : ComponentActivity() {
                             if (note == null) {
                                 Doremi.newNote(this, name, tags, body)
                             } else {
-                                val update = Note(
-                                    id = note.id,
-                                    name = name,
-                                    tags = tags,
-                                    body = body,
-                                    ctime = note.ctime
-                                )
-                                Doremi.writeNote(this, update)
+                                Doremi.updateNote(this, note.copy(name = name, tags = tags, body = body))
                             }
                             finishAction()
                         }, onCancel = { finishAction() })
@@ -143,14 +137,21 @@ class MainActivity : ComponentActivity() {
 //  - checkbox list of tags to filter in OR rather than AND
 //  - normalize tags (and names?)
 //  - note's priority
+//  - utime
 class Note(
-    val id: String = "",
+    val id: ULong = 0u,
     val name: String = "",
     val tags: List<String> = emptyList(),
     val body: String = "",
     val ctime: Long = 0
 ) {
-    fun serialize(): String = "$id\n$ctime\n$name\n${tags.joinToString(",")}\n$body"
+    fun copy(
+        id: ULong = this.id,
+        name: String = this.name,
+        tags: List<String> = this.tags,
+        body: String = this.body,
+        ctime: Long = this.ctime
+    ): Note = Note(id, name, tags, body, ctime)
 
     fun matches(filters: List<Filter>): Boolean {
         if (filters.isEmpty()) return true
@@ -165,19 +166,6 @@ class Note(
                     ) || tags.any { it.contains(flt.value, ignoreCase = true) }
                 }
             }
-        }
-    }
-
-    companion object {
-        fun deserialize(lines: List<String>): Note {
-            val id = lines.getOrNull(0) ?: ""
-            val ctime = lines.getOrNull(1)?.toLongOrNull() ?: 0L
-            val name = lines.getOrNull(2) ?: ""
-            val tags = lines.getOrNull(3)?.split(",")?.filter { it.isNotBlank() } ?: emptyList()
-            val body = lines.drop(4).joinToString("\n")
-            return Note(
-                id = id, name = name, tags = tags, body = body, ctime = ctime
-            )
         }
     }
 }
@@ -239,44 +227,38 @@ class Doremi(context: Context) {
 
     companion object {
         fun readNotes(context: Context): List<Note> {
-            val dir = File(context.filesDir, "notes")
-            if (!dir.exists()) {
-                dir.mkdirs()
-                // seed for testing. TODO: remove
+            val basedir = context.filesDir.absolutePath
+            val json = CoreLib.readAll(basedir)
+            val notes = JsonSerde.parseNotes(json)
+
+            // TODO: seeding for testing, remove
+            if (notes.isEmpty()) {
                 TestData.notes.forEachIndexed { idx, note ->
-                    val note = Note(
-                        id = "$idx",
-                        name = note.name,
-                        tags = note.tags,
-                        body = note.body,
-                        ctime = System.currentTimeMillis() - idx * 86400000L * 15
-                    )
-                    val file = File(dir, "${idx}.txt")
-                    file.writeText(note.serialize())
+                    val dbgCTime = System.currentTimeMillis() - idx * 86400000L * 15
+                    CoreLib.new(basedir, note.name, note.tags.toTypedArray(), note.body, dbgCTime)
                 }
+                return readNotes(context);
             }
-            return dir.listFiles()?.filter { it.extension == "txt" }?.map {
-                Note.deserialize(it.readLines())
-            } ?: emptyList()
+
+            return notes;
         }
 
-        fun writeNote(context: Context, note: Note) {
-            val dir = File(context.filesDir, "notes")
-            if (!dir.exists()) dir.mkdirs()
-            val file = File(dir, "${note.id}.txt")
-            file.writeText(note.serialize())
-        }
-
-        fun newNote(context: Context, name: String, tags: List<String>, body: String) {
-            writeNote(
-                context, Note(
-                    id = "${System.currentTimeMillis()}",
-                    name = name,
-                    tags = tags,
-                    body = body,
-                    ctime = System.currentTimeMillis(),
-                )
+        fun updateNote(context: Context, note: Note): Note {
+            val basedir = context.filesDir.absolutePath
+            val json = CoreLib.update(
+                basedir,
+                note.id.toString(),
+                note.name,
+                note.tags.toTypedArray(),
+                note.body
             )
+            return JsonSerde.parseNote(json)!!
+        }
+
+        fun newNote(context: Context, name: String, tags: List<String>, body: String): Note {
+            val basedir = context.filesDir.absolutePath
+            val json = CoreLib.new(basedir, name, tags.toTypedArray(), body, 0)
+            return JsonSerde.parseNote(json)!!
         }
     }
 }
@@ -304,35 +286,32 @@ fun ViewNote(note: Note, onClick: () -> Unit) {
             }
             val uriHandler = LocalUriHandler.current
             val annotated = buildAnnotatedString {
-                val bodyText = note.body
-                var last = 0
-                val urlRegex = Regex("https?://\\S+")
-                for (m in urlRegex.findAll(bodyText)) {
-                    val start = m.range.first
-                    val end = m.range.last + 1
-                    if (start > last) append(bodyText.substring(last, start))
-                    val url = m.value
-                    pushStyle(
-                        SpanStyle(
+                val urlRegex = Regex("""https?://\S+""")
+                var lastMatchEnd = 0
+                urlRegex.findAll(note.body).forEach { match ->
+                    append(note.body.substring(lastMatchEnd, match.range.first))
+                    pushStringAnnotation(tag = "URL", annotation = match.value)
+                    withStyle(
+                        style = SpanStyle(
                             color = MaterialTheme.colorScheme.primary,
                             textDecoration = TextDecoration.Underline
                         )
-                    )
-                    pushStringAnnotation(tag = "URL", annotation = url)
-                    append(url)
+                    ) {
+                        append(match.value)
+                    }
                     pop()
-                    pop()
-                    last = end
+                    lastMatchEnd = match.range.last + 1
                 }
-                if (last < bodyText.length) append(bodyText.substring(last))
+                append(note.body.substring(lastMatchEnd))
             }
-            // expansion of ClickableText, which is deprecated
+
             val onTextClick: (Int) -> Unit = { offset ->
-                val urlFound = annotated.getStringAnnotations(tag = "URL", start = offset, end = offset)
-                    .firstOrNull()?.let {
-                        uriHandler.openUri(it.item)
-                        true
-                    } ?: false
+                val urlFound =
+                    annotated.getStringAnnotations(tag = "URL", start = offset, end = offset)
+                        .firstOrNull()?.let {
+                            uriHandler.openUri(it.item)
+                            true
+                        } ?: false
                 if (!urlFound) {
                     onClick()
                 }
@@ -418,7 +397,9 @@ fun ViewNotes(doremi: Doremi) {
             }
 
             LazyColumn(state = listState) {
-                itemsIndexed(notes, key = { _, note -> note.id }) { index, note ->
+                // In Jetpack Compose, keys used in lazy layouts must be compatible with Android's Bundle because they are used for state restoration (via SaveableStateHolder).
+                // ULong is not currently supported by Bundle
+                itemsIndexed(notes, key = { _, note -> note.id.toString() }) { index, note ->
                     val curr = getMonthYear(note.ctime)
                     val prev = if (index > 0) getMonthYear(notes[index - 1].ctime) else null
 

@@ -3,6 +3,8 @@ use datetime::{Date, DateTime};
 use serde::de::{Deserializer, Error};
 use serde::ser::Serializer;
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map;
+use std::path::Path;
 use std::{
     collections::HashMap,
     fmt::{self, Debug},
@@ -15,26 +17,31 @@ use std::{
 #[derive(Debug)]
 pub struct DB {
     pub dir: path::PathBuf,
-    pub meta: Metadata,
+    pub metadata: Metadata,
 }
 
+// TODO: locking
 impl DB {
     pub fn load<P: AsRef<path::Path>>(dir: &P) -> anyhow::Result<Self> {
         if !fs::exists(dir)? {
             fs::create_dir_all(dir)?;
         }
-        let meta = Metadata::load(dir)?;
+        let metadata = Metadata::load(dir)?;
         Ok(Self {
             dir: dir.as_ref().to_path_buf(),
-            meta,
+            metadata,
         })
     }
 
-    pub fn block_flname(&self, ym: YearMonth) -> path::PathBuf {
-        self.dir.join(format!("{ym}.md"))
+    fn block_flname_in(dir: &path::Path, ym: YearMonth) -> path::PathBuf {
+        dir.join(format!("{ym}.md"))
     }
 
-    pub fn insert(&mut self, rec: &Record, ctime: DateTime) -> anyhow::Result<u64> {
+    pub fn block_flname(&self, ym: YearMonth) -> path::PathBuf {
+        DB::block_flname_in(&self.dir, ym)
+    }
+
+    pub fn insert(&mut self, rec: &Record, ctime: DateTime) -> anyhow::Result<RecMetadata> {
         let flname = self.block_flname(ctime.date().into());
         let mut fl = fs::OpenOptions::new()
             .read(true)
@@ -44,10 +51,36 @@ impl DB {
             .open(flname)?;
         fl.seek(io::SeekFrom::End(0))?;
         rec.write(&mut fl)?;
-        self.meta.insert(rec.id, ctime)?;
-        self.meta.dump(&self.dir)?;
+        let rec_md = self.metadata.insert(rec.id, ctime)?;
+        self.metadata.dump(&self.dir)?;
 
-        Ok(rec.id)
+        Ok(rec_md)
+    }
+
+    pub fn update(&mut self, rec: &Record) -> anyhow::Result<RecMetadata> {
+        let rec_md = self
+            .metadata
+            .get_mut(rec.id)
+            .context(format!("record {} not found", rec.id))?;
+        let flname = DB::block_flname_in(&self.dir, rec_md.ctime.date().into());
+        // the files are small by desing, so just read and rewrite the whole thing
+        let mut fl = fs::OpenOptions::new().read(true).write(true).open(flname)?;
+        let recs = DB::select(&mut fl).collect::<Vec<_>>();
+        fl.set_len(0)?;
+        fl.seek(io::SeekFrom::Start(0))?;
+        for xrec in recs {
+            if xrec.id == rec.id {
+                rec.write(&mut fl)?;
+            }
+            else {
+                xrec.write(&mut fl)?;
+            }
+        }
+        rec_md.utime = DateTime::now();
+        let rec_md = *rec_md;
+        self.metadata.dump(&self.dir)?;
+
+        Ok(rec_md)
     }
 
     // TODO: don't read whole file
@@ -76,27 +109,27 @@ impl DB {
 
     // TODO: delay reading records so i dont need to dwld everything
     pub fn sync(dst: &mut DB, src: &DB) -> anyhow::Result<()> {
-        for (ym, month_meta) in &src.meta.months {
+        for (ym, month_md) in &src.metadata.months {
             let mut new_recs = Vec::new();
             let mut mod_recs = Vec::new();
 
             let mut src_fl = fs::File::open(src.block_flname(*ym))?;
             let mut dst_fl = fs::File::open(dst.block_flname(*ym))?;
 
-            for (id, src_meta) in &month_meta.0 {
-                match dst.meta.get(*id) {
-                    Some(dst_meta) => {
-                        assert!(src_meta.ctime == dst_meta.ctime);
+            for (id, src_md) in &month_md.0 {
+                match dst.metadata.get(*id) {
+                    Some(dst_md) => {
+                        assert!(src_md.ctime == dst_md.ctime);
                         // TODO: if i want a more meaningful sync, i need more info
-                        let (fl, utime) = match src_meta.utime.cmp(&dst_meta.utime) {
+                        let (fl, utime) = match src_md.utime.cmp(&dst_md.utime) {
                             std::cmp::Ordering::Equal => continue,
-                            std::cmp::Ordering::Greater => (&mut src_fl, src_meta.utime),
-                            std::cmp::Ordering::Less => (&mut dst_fl, dst_meta.utime),
+                            std::cmp::Ordering::Greater => (&mut src_fl, src_md.utime),
+                            std::cmp::Ordering::Less => (&mut dst_fl, dst_md.utime),
                         };
                         let rec = DB::find(fl, *id)?;
                         mod_recs.push((rec, utime));
                     }
-                    None => new_recs.push((*id, src_meta.ctime)),
+                    None => new_recs.push((*id, src_md.ctime)),
                 }
             }
 
@@ -206,19 +239,19 @@ impl Metadata {
         Ok(())
     }
 
-    fn insert(&mut self, id: u64, ctime: DateTime) -> anyhow::Result<()> {
-        let rec_meta = RecMetadata {
+    fn insert(&mut self, id: u64, ctime: DateTime) -> anyhow::Result<RecMetadata> {
+        let rec_md = RecMetadata {
             ctime,
             utime: ctime,
         };
         self.months
             .entry(ctime.date().into())
-            .and_modify(|month_meta| {
-                month_meta.0.insert(id, rec_meta);
+            .and_modify(|month_md| {
+                month_md.0.insert(id, rec_md);
             })
-            .or_insert(MonthMetadata(HashMap::from([(id, rec_meta)])));
+            .or_insert(MonthMetadata(HashMap::from([(id, rec_md)])));
 
-        Ok(())
+        Ok(rec_md)
     }
 
     pub fn get(&self, id: u64) -> Option<&RecMetadata> {
@@ -321,5 +354,30 @@ impl FromStr for Record {
             name,
             contents,
         })
+    }
+}
+
+pub struct Select {
+    dir: path::PathBuf,
+    months: hash_map::IntoIter<YearMonth, MonthMetadata>,
+}
+
+impl Select {
+    pub fn new<P: AsRef<Path>>(dir: &P) -> anyhow::Result<Select> {
+        let db = DB::load(dir)?;
+        Ok(Select {
+            dir: dir.as_ref().into(),
+            months: db.metadata.months.into_iter(),
+        })
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    // can't impl Iterator: see issue #63063 <https://github.com/rust-lang/rust/issues/63063>
+    pub fn next(&mut self) -> Option<(YearMonth, MonthMetadata, impl Iterator<Item = Record>)> {
+        let (ym, md) = self.months.next()?;
+        let flname = DB::block_flname_in(&self.dir, ym);
+        let fl = fs::File::open(&flname).unwrap();
+
+        Some((ym, md, DB::select(fl)))
     }
 }

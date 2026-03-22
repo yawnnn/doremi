@@ -1,10 +1,13 @@
 pub mod google;
 pub mod storage;
 
+#[cfg(target_os = "android")]
+mod android;
+
 use crate::google::*;
 use crate::storage::*;
 
-use date::interval::MonthInterval;
+use date::Date;
 use datetime::DateTime;
 use rand::{self, Rng};
 use std::{
@@ -22,11 +25,21 @@ pub fn new<P: AsRef<Path>, S: AsRef<str>>(
     name: &str,
     tags: &[S],
     contents: &str,
-) -> anyhow::Result<u64> {
+    dbg_ctime: Option<DateTime>,    // TODO: remove
+) -> anyhow::Result<(Record, RecMetadata)> {
     let mut db = DB::load(&dir_db(basedir))?;
     let rec = Record::new(rand::rng().next_u64(), name, tags, contents);
 
-    db.insert(&rec, DateTime::now())
+    let rec_md = db.insert(&rec, dbg_ctime.unwrap_or(DateTime::now()))?;
+
+    Ok((rec, rec_md))
+}
+
+pub fn update<P: AsRef<Path>>(basedir: &P, rec: &Record) -> anyhow::Result<RecMetadata> {
+    let mut db = DB::load(&dir_db(basedir))?;
+    let rec_md = db.update(rec)?;
+
+    Ok(rec_md)
 }
 
 pub fn search<P: AsRef<Path>>(
@@ -35,33 +48,28 @@ pub fn search<P: AsRef<Path>>(
     beg_dt: DateTime,
     end_dt: Option<DateTime>,
 ) -> anyhow::Result<Vec<Record>> {
+    let beg_d = beg_dt.date();
+    let end_d = end_dt
+        .map(|dt| dt.date())
+        .unwrap_or(Date::from_timestamp(i64::MAX));
+
+    let mut select = Select::new(&dir_db(basedir))?;
     let mut v = Vec::new();
-    let mut ym = beg_dt.date();
 
-    let db = DB::load(&dir_db(basedir))?;
+    while let Some((ym, months_md, recs)) = select.next() {
+        let d: Date = ym.into();
+        if d >= beg_d && d <= end_d {
+            v.extend(recs.filter(|r| {
+                let rec_md = months_md.0.get(&r.id).unwrap();
 
-    while end_dt.is_none_or(|end_dt| ym <= end_dt.date()) {
-        let flname = db.block_flname(ym.into());
-        if !fs::exists(&flname)? {
-            break;
+                rec_md.ctime >= beg_dt
+                    && end_dt.is_none_or(|end_dt| rec_md.ctime <= end_dt)
+                    && tags
+                        .as_ref()
+                        .map(|tags| tags.iter().all(|t| r.tags.0.contains(t)))
+                        .unwrap_or(true)
+            }))
         }
-        let mut fl = fs::OpenOptions::new()
-            .read(true)
-            .truncate(false)
-            .open(&flname)?;
-
-        v.extend(DB::select(&mut fl).filter(|r| {
-            let rec_meta = db.meta.get(r.id).unwrap();
-
-            rec_meta.ctime >= beg_dt
-                && end_dt.is_none_or(|end_dt| rec_meta.ctime <= end_dt)
-                && tags
-                    .as_ref()
-                    .map(|tags| tags.iter().all(|t| r.tags.0.contains(t)))
-                    .unwrap_or(true)
-        }));
-
-        ym = ym + MonthInterval::new(1);
     }
 
     Ok(v)
@@ -153,6 +161,7 @@ pub fn clear_remote<P: AsRef<Path>>(basedir: &P) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use date::interval::MonthInterval;
     use datetime::interval::TimeInterval;
     use std::{convert::Infallible, path::PathBuf};
 
@@ -404,7 +413,7 @@ lorem ipsum something something
         let (correct_db, mut local_db, remote_db) = test_sync_prep().unwrap();
         DB::sync(&mut local_db, &remote_db).unwrap();
 
-        assert_eq!(correct_db.meta, local_db.meta);
+        assert_eq!(correct_db.metadata, local_db.metadata);
         assert!(eq_db_records(&correct_db, &local_db));
     }
 
@@ -413,7 +422,7 @@ lorem ipsum something something
         let (correct_db, local_db, mut remote_db) = test_sync_prep().unwrap();
         DB::sync(&mut remote_db, &local_db).unwrap();
 
-        assert_eq!(correct_db.meta, remote_db.meta);
+        assert_eq!(correct_db.metadata, remote_db.metadata);
         assert!(eq_db_records(&correct_db, &remote_db));
     }
 }

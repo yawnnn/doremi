@@ -1,0 +1,3 @@
+[alias]
+# android = "build --target aarch64-linux-android --release"
+android = "ndk -t aarch64-linux-android --platform 21 build --release"  # requires ANDROID_NDK_ROOT env variable set (i.e. in user's config.toml)
